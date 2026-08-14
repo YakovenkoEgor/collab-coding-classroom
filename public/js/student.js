@@ -1,0 +1,337 @@
+let currentUser = null;
+let assignments = [];
+let activeAssignment = null;
+let versions = [];
+let activeVersion = null; // the version currently loaded into the editor
+let editor = null;
+let editorReady = null; // promise
+let selectedVersionForMessage = null;
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...opts,
+  });
+  if (res.status === 401) {
+    window.location.href = "/login.html";
+    throw new Error("Not logged in");
+  }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Request failed");
+  return data;
+}
+
+function initEditor() {
+  editorReady = new Promise((resolve) => {
+    require.config({ paths: { vs: "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.47.0/min/vs" } });
+    require(["vs/editor/editor.main"], () => {
+      resolve();
+    });
+  });
+}
+
+async function loadMe() {
+  const { user } = await api("/api/auth/me");
+  if (!user) { window.location.href = "/login.html"; return; }
+  currentUser = user;
+  document.getElementById("whoami").textContent = `${user.displayName} (student)`;
+}
+
+async function loadAssignments() {
+  const { assignments: list } = await api("/api/assignments");
+  assignments = list;
+  const container = document.getElementById("assignment-list");
+  container.innerHTML = "";
+  if (list.length === 0) {
+    container.innerHTML = '<p class="muted">No assignments yet.</p>';
+    return;
+  }
+  list.forEach((a) => {
+    const div = document.createElement("div");
+    div.className = "assignment-item" + (activeAssignment && activeAssignment.id === a.id ? " active" : "");
+    div.innerHTML = `<div class="title">${escapeHtml(a.title)}</div>
+      <div class="meta">${new Date(a.created_at).toLocaleDateString()}</div>`;
+    div.onclick = () => selectAssignment(a);
+    container.appendChild(div);
+  });
+}
+
+function escapeHtml(str) {
+  const d = document.createElement("div");
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+async function selectAssignment(assignment) {
+  activeAssignment = assignment;
+  selectedVersionForMessage = null;
+  activeVersion = null;
+  await loadAssignments(); // re-render sidebar highlight
+  await renderMainPanel(); // awaits the editor so loadVersions can fill it
+  await Promise.all([loadVersions(), loadDiscussion()]);
+}
+
+async function renderMainPanel() {
+  const main = document.getElementById("main-content");
+  main.innerHTML = `
+    <div class="card">
+      <h2>${escapeHtml(activeAssignment.title)}</h2>
+      <p class="muted">${escapeHtml(activeAssignment.description || "")}</p>
+      <p class="muted" style="font-size:12px">Note: your public class must be named <code>Main</code> so it can be compiled and run.</p>
+    </div>
+
+    <div class="card">
+      <h3>Code editor</h3>
+      <div class="editor-wrap" id="editor-container"></div>
+      <div id="readonly-banner"></div>
+      <div class="toolbar">
+        <button id="run-btn">▶ Run</button>
+        <button class="secondary" id="save-draft-btn">Save draft</button>
+        <button id="submit-btn">Submit</button>
+      </div>
+      <div class="output-panel" id="output-panel">Output will appear here.</div>
+    </div>
+
+    <div class="card">
+      <h3>Version history</h3>
+      <div class="version-list" id="version-list"><p class="muted">Loading…</p></div>
+    </div>
+
+    <div class="card">
+      <h3>Discussion with teacher</h3>
+      <div id="linked-version-banner"></div>
+      <div class="discussion" id="discussion-list"></div>
+      <div class="toolbar">
+        <input id="message-input" placeholder="Write a message…" style="flex:1">
+        <button id="send-message-btn">Send</button>
+      </div>
+    </div>
+  `;
+
+  await setupEditor();
+  document.getElementById("run-btn").onclick = runCode;
+  document.getElementById("save-draft-btn").onclick = () => saveVersion("draft");
+  document.getElementById("submit-btn").onclick = () => saveVersion("submitted");
+  document.getElementById("send-message-btn").onclick = sendMessage;
+  document.getElementById("message-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") sendMessage();
+  });
+}
+
+async function setupEditor() {
+  await editorReady;
+  const container = document.getElementById("editor-container");
+  const starter = activeAssignment.starter_code ||
+    "public class Main {\n    public static void main(String[] args) {\n        \n    }\n}\n";
+  editor = monaco.editor.create(container, {
+    value: starter,
+    language: "java",
+    theme: "vs-dark",
+    automaticLayout: true,
+    fontSize: 14,
+    minimap: { enabled: false },
+  });
+}
+
+// The newest version (the list comes back ordered by version_number DESC).
+function latestVersion() {
+  return versions.length > 0 ? versions[0] : null;
+}
+
+// Only the latest version is editable; older ones are read-only history.
+function isEditable() {
+  const latest = latestVersion();
+  if (!latest) return true; // nothing saved yet - starter code is editable
+  return activeVersion !== null && activeVersion.id === latest.id;
+}
+
+// Loads a version into the editor and switches edit/read-only mode.
+async function openVersion(v) {
+  await editorReady;
+  editor.setValue(v.code);
+  activeVersion = v;
+  renderOutput(v.last_run_stdout, v.last_run_stderr, v.last_run_status);
+  await loadVersions();
+}
+
+// Reflects the current mode in the UI: Monaco read-only flag, the save/submit
+// buttons, and a banner offering a way back to the latest version.
+function applyEditMode() {
+  const editable = isEditable();
+  if (editor) editor.updateOptions({ readOnly: !editable });
+
+  const saveBtn = document.getElementById("save-draft-btn");
+  const submitBtn = document.getElementById("submit-btn");
+  if (saveBtn) saveBtn.disabled = !editable;
+  if (submitBtn) submitBtn.disabled = !editable;
+
+  const banner = document.getElementById("readonly-banner");
+  if (!banner) return;
+  if (editable) {
+    banner.innerHTML = "";
+    return;
+  }
+  const latest = latestVersion();
+  banner.innerHTML = `<p class="muted" style="font-size:12px">
+      Viewing v${activeVersion.version_number} — older versions are read-only.
+      Continue from v${latest.version_number} to keep working.
+    </p>
+    <button class="secondary" id="back-to-latest-btn">Back to latest (v${latest.version_number})</button>`;
+  document.getElementById("back-to-latest-btn").onclick = () => openVersion(latest);
+}
+
+async function loadVersions() {
+  const { submissions } = await api(`/api/submissions/assignment/${activeAssignment.id}`);
+  versions = submissions;
+
+  // On first load, start the student off on their latest version rather than
+  // the starter code - that's the only version they're allowed to build on.
+  if (!activeVersion && versions.length > 0) {
+    const latest = latestVersion();
+    await editorReady;
+    editor.setValue(latest.code);
+    activeVersion = latest;
+    renderOutput(latest.last_run_stdout, latest.last_run_stderr, latest.last_run_status);
+  }
+
+  const list = document.getElementById("version-list");
+  if (!list) return;
+  applyEditMode();
+  if (versions.length === 0) {
+    list.innerHTML = '<p class="muted">No versions saved yet.</p>';
+    return;
+  }
+  list.innerHTML = "";
+  versions.forEach((v, idx) => {
+    const div = document.createElement("div");
+    div.className = "version-item" + (activeVersion && activeVersion.id === v.id ? " active" : "");
+    const tag = idx === 0 ? " — latest" : " — read-only";
+    div.textContent = `v${v.version_number} — ${v.status} — ${new Date(v.created_at).toLocaleString()}${tag}`;
+    div.onclick = () => openVersion(v);
+    list.appendChild(div);
+  });
+}
+
+function renderOutput(stdout, stderr, status) {
+  const panel = document.getElementById("output-panel");
+  if (!panel) return;
+  const hasError = stderr && stderr.trim().length > 0;
+  panel.className = "output-panel" + (hasError ? " error" : "");
+  panel.innerHTML = "";
+  const statusLine = document.createElement("div");
+  statusLine.className = "status-line";
+  statusLine.textContent = `Status: ${status || "—"}`;
+  panel.appendChild(statusLine);
+  const pre = document.createElement("div");
+  pre.textContent = (stdout || "") + (stderr ? "\n" + stderr : "") || "(no output)";
+  panel.appendChild(pre);
+}
+
+async function runCode() {
+  await editorReady;
+  const code = editor.getValue();
+  const btn = document.getElementById("run-btn");
+  btn.disabled = true;
+  btn.textContent = "Running…";
+  try {
+    const result = await api("/api/submissions/run", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    });
+    renderOutput(result.stdout, result.stderr || result.compileOutput, result.status);
+  } catch (err) {
+    renderOutput("", err.message, "Error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "▶ Run";
+  }
+}
+
+async function saveVersion(status) {
+  await editorReady;
+  if (!isEditable()) {
+    alert("This is an older version and can't be saved or submitted. Go back to your latest version first.");
+    return;
+  }
+  const code = editor.getValue();
+  const btn = status === "submitted" ? document.getElementById("submit-btn") : document.getElementById("save-draft-btn");
+  btn.disabled = true;
+  try {
+    const { submission } = await api(`/api/submissions/assignment/${activeAssignment.id}`, {
+      method: "POST",
+      body: JSON.stringify({
+        code,
+        status,
+        // Tells the server which version this edit is based on; it rejects
+        // anything that isn't the latest one.
+        baseVersionId: activeVersion ? activeVersion.id : null,
+      }),
+    });
+    activeVersion = submission;
+    renderOutput(submission.last_run_stdout, submission.last_run_stderr, submission.last_run_status);
+    await loadVersions();
+  } catch (err) {
+    alert("Could not save: " + err.message);
+    await loadVersions(); // re-sync in case another tab added a newer version
+  } finally {
+    applyEditMode();
+  }
+}
+
+async function loadDiscussion() {
+  const { messages } = await api(`/api/discussions/assignment/${activeAssignment.id}`);
+  const list = document.getElementById("discussion-list");
+  if (!list) return;
+  list.innerHTML = "";
+  if (messages.length === 0) {
+    list.innerHTML = '<p class="muted">No messages yet. Ask a question or share a note about your code.</p>';
+    return;
+  }
+  messages.forEach((m) => {
+    const div = document.createElement("div");
+    div.className = "message " + (m.authorRole === "teacher" ? "teacher" : "student");
+    let linked = "";
+    if (m.linkedVersion) {
+      linked = `<span class="linked-version" data-submission="${m.submission_id}">→ referring to v${m.linkedVersion}</span>`;
+    }
+    div.innerHTML = `<div class="meta">${escapeHtml(m.authorName)} · ${new Date(m.created_at).toLocaleString()}</div>
+      <div class="body">${escapeHtml(m.body)}</div>${linked}`;
+    list.appendChild(div);
+  });
+  list.scrollTop = list.scrollHeight;
+
+  list.querySelectorAll(".linked-version").forEach((el) => {
+    el.onclick = async () => {
+      const subId = parseInt(el.dataset.submission, 10);
+      const v = versions.find((x) => x.id === subId);
+      if (v) await openVersion(v); // may switch the editor to read-only mode
+    };
+  });
+}
+
+async function sendMessage() {
+  const input = document.getElementById("message-input");
+  const body = input.value.trim();
+  if (!body) return;
+  try {
+    await api(`/api/discussions/assignment/${activeAssignment.id}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ body, submissionId: activeVersion ? activeVersion.id : null }),
+    });
+    input.value = "";
+    await loadDiscussion();
+  } catch (err) {
+    alert("Could not send message: " + err.message);
+  }
+}
+
+document.getElementById("logout-btn").onclick = async () => {
+  await api("/api/auth/logout", { method: "POST" });
+  window.location.href = "/login.html";
+};
+
+(async function init() {
+  initEditor();
+  await loadMe();
+  await loadAssignments();
+})();

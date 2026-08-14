@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Java Classroom — Teacher</title>
+<link rel="stylesheet" href="/css/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.47.0/min/vs/loader.min.js"></script>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span> Java Classroom</div>
+    <div class="user-info">
+      <span id="whoami"></span>
+      <button class="secondary" id="logout-btn">Log out</button>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="sidebar">
+      <h3>Assignments</h3>
+      <div id="assignment-list"></div>
+      <button id="new-assignment-btn" style="width:100%; margin-top:12px">+ New assignment</button>
+      <hr style="border-color: var(--border); margin: 16px 0">
+      <h3>Students</h3>
+      <div id="student-manage"></div>
+      <button class="secondary" id="new-student-btn" style="width:100%; margin-top:8px">+ Add student</button>
+    </div>
+
+    <div class="main" id="main-content">
+      <div class="card">
+        <p class="muted">Select an assignment on the left to review student work.</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/teacher.js"></script>
+</body>
+</html>
