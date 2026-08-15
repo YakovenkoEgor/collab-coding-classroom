@@ -86,4 +86,30 @@ router.post("/assignment/:assignmentId/messages", requireLogin, (req, res) => {
   res.json({ message });
 });
 
+// Delete a message. A student may delete only their own; a teacher may delete
+// any message in a thread - their own and their students'.
+router.delete("/messages/:id", requireLogin, (req, res) => {
+  const message = db
+    .prepare("SELECT * FROM messages WHERE id = ?")
+    .get(req.params.id);
+  if (!message) return res.status(404).json({ error: "Message not found" });
+
+  const user = req.session.user;
+  if (user.role !== "teacher") {
+    if (message.author_id !== user.id) {
+      return res.status(403).json({ error: "You can only delete your own messages" });
+    }
+    // Students may only touch their own thread.
+    const discussion = db
+      .prepare("SELECT * FROM discussions WHERE id = ?")
+      .get(message.discussion_id);
+    if (!discussion || discussion.student_id !== user.id) {
+      return res.status(403).json({ error: "Not your discussion" });
+    }
+  }
+
+  db.prepare("DELETE FROM messages WHERE id = ?").run(message.id);
+  res.json({ ok: true });
+});
+
 module.exports = router;

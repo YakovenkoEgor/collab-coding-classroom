@@ -11,7 +11,9 @@ const gradeRoutes = require("./routes/grades");
 
 const app = express();
 
-app.use(express.json({ limit: "1mb" }));
+// Assignment handouts are uploaded as base64 inside the JSON body, so the
+// limit has to cover a batch of files plus ~33% encoding overhead.
+app.use(express.json({ limit: "60mb" }));
 app.use(
   session({
     secret: process.env.SESSION_SECRET || "dev-secret-change-me",
@@ -35,6 +37,17 @@ app.use(express.static(path.join(__dirname, "public")));
 // Fallback: send login page for any unmatched route (simple SPA-ish behavior)
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "login.html"));
+});
+
+// Keep failures as JSON - an oversized upload otherwise returns Express's
+// HTML error page, which the frontend can't parse into a message.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err.type === "entity.too.large") {
+    return res.status(413).json({ error: "Upload is too large" });
+  }
+  console.error(err);
+  res.status(500).json({ error: "Server error" });
 });
 
 const PORT = process.env.PORT || 3000;

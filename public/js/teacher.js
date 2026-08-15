@@ -2,6 +2,7 @@ let currentUser = null;
 let assignments = [];
 let activeAssignment = null;
 let activeStudent = null; // {studentId, displayName}
+let activeProfile = null; // student whose profile page is open, if any
 let versions = [];
 let activeVersion = null;
 let viewerEditor = null;
@@ -10,6 +11,14 @@ let editorReady = null;
 // Grading scale: whole numbers 0-15 (mirrored by validation in routes/grades.js)
 const MIN_SCORE = 0;
 const MAX_SCORE = 15;
+
+// Upload limits, mirrored from storage.js
+const MAX_UPLOAD_MB = 10;
+const MAX_UPLOAD_FILES = 10;
+const ALLOWED_UPLOAD_EXTENSIONS = [
+  ".pdf", ".doc", ".docx", ".odt", ".rtf", ".txt", ".md",
+  ".ppt", ".pptx", ".xls", ".xlsx", ".csv", ".png", ".jpg", ".jpeg",
+];
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -66,9 +75,12 @@ async function loadAssignments() {
   });
 }
 
-document.getElementById("new-assignment-btn").onclick = () => {
+document.getElementById("new-assignment-btn").onclick = async () => {
   activeAssignment = null;
   activeStudent = null;
+  activeProfile = null;
+  await loadAssignments();
+  await loadStudentManage();
   renderNewAssignmentForm();
 };
 
@@ -90,41 +102,134 @@ function renderNewAssignmentForm() {
         <textarea id="a-starter" rows="6" style="font-family: var(--font-mono)"
           placeholder="public class Main {\n    public static void main(String[] args) {\n\n    }\n}"></textarea>
       </div>
+      <div class="form-row">
+        <label>Handouts (optional)</label>
+        <input type="file" id="a-files" multiple accept="${ALLOWED_UPLOAD_EXTENSIONS.join(",")}">
+        <span class="muted" style="font-size:12px">
+          PDF, DOCX and similar documents — up to ${MAX_UPLOAD_MB} MB each,
+          ${MAX_UPLOAD_FILES} files max. Students can download them from the assignment.
+        </span>
+        <div id="a-files-list"></div>
+      </div>
       <button id="create-assignment-btn">Create assignment</button>
     </div>
   `;
+
+  const fileInput = document.getElementById("a-files");
+  fileInput.onchange = () => renderChosenFiles(fileInput.files);
+
   document.getElementById("create-assignment-btn").onclick = async () => {
     const title = document.getElementById("a-title").value.trim();
     const description = document.getElementById("a-desc").value.trim();
     const starterCode = document.getElementById("a-starter").value;
     if (!title) return alert("Title is required");
+
+    const btn = document.getElementById("create-assignment-btn");
+    btn.disabled = true;
+    btn.textContent = "Creating…";
     try {
+      const files = await readFilesAsBase64(fileInput.files);
       const { assignment } = await api("/api/assignments", {
         method: "POST",
-        body: JSON.stringify({ title, description, starterCode }),
+        body: JSON.stringify({ title, description, starterCode, files }),
       });
       await loadAssignments();
       selectAssignment(assignment);
     } catch (err) {
       alert("Could not create assignment: " + err.message);
+      btn.disabled = false;
+      btn.textContent = "Create assignment";
     }
   };
+}
+
+function renderChosenFiles(fileList) {
+  const box = document.getElementById("a-files-list");
+  if (!box) return;
+  const files = Array.from(fileList || []);
+  if (files.length === 0) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = files
+    .map(
+      (f) =>
+        `<div class="file-item"><span class="file-name">${escapeHtml(f.name)}</span>
+         <span class="muted">${formatSize(f.size)}</span></div>`
+    )
+    .join("");
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// Reads the picked files into base64 so they can travel inside the JSON body.
+// Validation is repeated on the server - this only gives faster feedback.
+function readFilesAsBase64(fileList) {
+  const files = Array.from(fileList || []);
+  if (files.length === 0) return Promise.resolve([]);
+  if (files.length > MAX_UPLOAD_FILES) {
+    return Promise.reject(new Error(`At most ${MAX_UPLOAD_FILES} files can be attached`));
+  }
+  const tooBig = files.find((f) => f.size > MAX_UPLOAD_MB * 1024 * 1024);
+  if (tooBig) {
+    return Promise.reject(
+      new Error(`"${tooBig.name}" is larger than ${MAX_UPLOAD_MB} MB`)
+    );
+  }
+
+  return Promise.all(
+    files.map(
+      (file) =>
+        new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve({ name: file.name, data: reader.result });
+          reader.onerror = () => reject(new Error(`Could not read "${file.name}"`));
+          reader.readAsDataURL(file);
+        })
+    )
+  );
+}
+
+// Renders the download list shown on an existing assignment.
+function renderFileLinks(assignmentId, files) {
+  if (!files || files.length === 0) return "";
+  const items = files
+    .map(
+      (f) =>
+        `<div class="file-item">
+           <a href="/api/assignments/${assignmentId}/files/${f.id}/download">${escapeHtml(f.originalName)}</a>
+           <span class="muted">${formatSize(f.size)}</span>
+         </div>`
+    )
+    .join("");
+  return `<div class="file-list"><h4>Handouts</h4>${items}</div>`;
 }
 
 async function selectAssignment(assignment) {
   activeAssignment = assignment;
   activeStudent = null;
+  activeProfile = null;
   await loadAssignments();
+  await loadStudentManage(); // drop the profile highlight in the sidebar
   await renderOverview();
 }
 
 async function renderOverview() {
-  const { students } = await api(`/api/assignments/${activeAssignment.id}/overview`);
+  // `roster` rather than `students` so it doesn't shadow the sidebar list.
+  const [{ students: roster }, { files }] = await Promise.all([
+    api(`/api/assignments/${activeAssignment.id}/overview`),
+    api(`/api/assignments/${activeAssignment.id}/files`),
+  ]);
   const main = document.getElementById("main-content");
   main.innerHTML = `
     <div class="card">
       <h2>${escapeHtml(activeAssignment.title)}</h2>
       <p class="muted">${escapeHtml(activeAssignment.description || "")}</p>
+      ${renderFileLinks(activeAssignment.id, files)}
     </div>
     <div class="card">
       <h3>Student submissions</h3>
@@ -137,11 +242,11 @@ async function renderOverview() {
     </div>
   `;
   const tbody = document.getElementById("student-rows");
-  if (students.length === 0) {
+  if (roster.length === 0) {
     tbody.innerHTML = '<tr><td colspan="5" class="muted">No students yet — add some in the sidebar.</td></tr>';
     return;
   }
-  students.forEach((s) => {
+  roster.forEach((s) => {
     const tr = document.createElement("tr");
     tr.className = "student-row";
     tr.innerHTML = `
@@ -325,11 +430,18 @@ async function loadDiscussion() {
     if (m.linkedVersion) {
       linked = `<span class="linked-version" data-submission="${m.submission_id}">→ referring to v${m.linkedVersion}</span>`;
     }
-    div.innerHTML = `<div class="meta">${escapeHtml(m.authorName)} · ${new Date(m.created_at).toLocaleString()}</div>
+    // A teacher may delete any message in the thread - their own and the student's.
+    div.innerHTML = `<div class="meta">${escapeHtml(m.authorName)} · ${new Date(m.created_at).toLocaleString()}
+        <button class="delete-message" data-message="${m.id}" title="Delete message">×</button>
+      </div>
       <div class="body">${escapeHtml(m.body)}</div>${linked}`;
     list.appendChild(div);
   });
   list.scrollTop = list.scrollHeight;
+
+  list.querySelectorAll(".delete-message").forEach((el) => {
+    el.onclick = () => deleteMessage(parseInt(el.dataset.message, 10));
+  });
 
   list.querySelectorAll(".linked-version").forEach((el) => {
     el.onclick = async () => {
@@ -343,6 +455,16 @@ async function loadDiscussion() {
       }
     };
   });
+}
+
+async function deleteMessage(messageId) {
+  if (!confirm("Delete this message? This can't be undone.")) return;
+  try {
+    await api(`/api/discussions/messages/${messageId}`, { method: "DELETE" });
+    await loadDiscussion();
+  } catch (err) {
+    alert("Could not delete message: " + err.message);
+  }
 }
 
 async function sendMessage() {
@@ -366,32 +488,101 @@ async function sendMessage() {
 async function loadStudentManage() {
   const { users } = await api("/api/auth/users");
   const container = document.getElementById("student-manage");
+  container.innerHTML = "";
   if (users.length === 0) {
     container.innerHTML = '<p class="muted">No students yet.</p>';
     return;
   }
-  container.innerHTML = users
-    .map((u) => `<div class="meta" style="margin-bottom:4px">${escapeHtml(u.displayName)} <span class="muted">(${escapeHtml(u.username)})</span></div>`)
-    .join("");
+
+  // Group students under their study group heading; ungrouped ones last.
+  const groups = new Map();
+  users.forEach((u) => {
+    const key = u.groupName || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(u);
+  });
+
+  groups.forEach((members, groupName) => {
+    const heading = document.createElement("div");
+    heading.className = "group-heading";
+    heading.textContent = groupName || "No group";
+    container.appendChild(heading);
+
+    members.forEach((u) => {
+      const div = document.createElement("div");
+      div.className =
+        "assignment-item" +
+        (activeProfile && activeProfile.id === u.id ? " active" : "");
+      div.innerHTML = `<div class="title">${escapeHtml(u.displayName)}</div>
+        <div class="meta">${escapeHtml(u.username)}</div>`;
+      div.onclick = () => selectStudentProfile(u.id);
+      container.appendChild(div);
+    });
+  });
 }
 
-document.getElementById("new-student-btn").onclick = async () => {
-  const displayName = prompt("Student's display name (e.g. Alex Chen):");
-  if (!displayName) return;
-  const username = prompt("Login username for this student (e.g. alexc):");
-  if (!username) return;
-  const password = prompt("Temporary password for this student:");
-  if (!password) return;
-  try {
-    await api("/api/auth/users", {
-      method: "POST",
-      body: JSON.stringify({ displayName, username, password, role: "student" }),
-    });
-    await loadStudentManage();
-  } catch (err) {
-    alert("Could not add student: " + err.message);
+// ---------- Student profile (all assignments for one student) ----------
+
+async function selectStudentProfile(studentId) {
+  activeAssignment = null;
+  activeStudent = null;
+  activeProfile = { id: studentId };
+  await loadAssignments(); // clears the assignment highlight
+
+  const { student, assignments: rows } = await api(`/api/auth/users/${studentId}`);
+  activeProfile = student;
+  await loadStudentManage(); // re-render sidebar highlight
+
+  const main = document.getElementById("main-content");
+  main.innerHTML = `
+    <div class="card">
+      <h2>${escapeHtml(student.displayName)}</h2>
+      <table class="profile-table">
+        <tr><td class="muted">Username</td><td>${escapeHtml(student.username)}</td></tr>
+        <tr><td class="muted">First name</td><td>${escapeHtml(student.firstName || "—")}</td></tr>
+        <tr><td class="muted">Last name</td><td>${escapeHtml(student.lastName || "—")}</td></tr>
+        <tr><td class="muted">Study group</td><td>${escapeHtml(student.groupName || "—")}</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Assignments</h3>
+      <table>
+        <thead>
+          <tr><th>Assignment</th><th>Latest version</th><th>Status</th><th>Last activity</th><th>Grade</th></tr>
+        </thead>
+        <tbody id="profile-rows"></tbody>
+      </table>
+    </div>
+  `;
+
+  const tbody = document.getElementById("profile-rows");
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="muted">No assignments yet.</td></tr>';
+    return;
   }
-};
+  rows.forEach((r) => {
+    const tr = document.createElement("tr");
+    tr.className = "student-row";
+    tr.innerHTML = `
+      <td>${escapeHtml(r.title)}${r.archived ? ' <span class="muted">(archived)</span>' : ""}</td>
+      <td>${r.latestVersion ? "v" + r.latestVersion : "—"}</td>
+      <td>${r.status ? `<span class="badge ${r.status}">${r.status}</span>` : '<span class="badge">not started</span>'}</td>
+      <td class="muted">${r.lastActivity ? new Date(r.lastActivity).toLocaleString() : "—"}</td>
+      <td>${r.score !== null && r.score !== undefined ? r.score : "—"}</td>
+    `;
+    // Jump straight to reviewing this student's work on that assignment.
+    tr.onclick = async () => {
+      const assignment = assignments.find((a) => a.id === r.assignmentId);
+      if (!assignment) return;
+      activeProfile = null;
+      activeAssignment = assignment;
+      await loadAssignments();
+      await loadStudentManage();
+      await selectStudent(student.id, student.displayName);
+    };
+    tbody.appendChild(tr);
+  });
+}
 
 document.getElementById("logout-btn").onclick = async () => {
   await api("/api/auth/logout", { method: "POST" });

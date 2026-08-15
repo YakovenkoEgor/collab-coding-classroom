@@ -1,7 +1,9 @@
 const path = require("path");
 const Database = require("better-sqlite3");
 
-const dbPath = path.join(__dirname, "..", "classroom.db");
+// DB_PATH lets you point at a throwaway copy (handy for trying a migration
+// before it touches the real classroom.db).
+const dbPath = process.env.DB_PATH || path.join(__dirname, "..", "classroom.db");
 const db = new Database(dbPath);
 
 db.pragma("journal_mode = WAL");
@@ -67,6 +69,18 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Teacher-uploaded handouts attached to an assignment (PDF, DOCX, ...).
+-- The bytes live on disk under uploads/; only metadata is stored here.
+CREATE TABLE IF NOT EXISTS assignment_files (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  assignment_id INTEGER NOT NULL REFERENCES assignments(id),
+  original_name TEXT NOT NULL,
+  stored_name   TEXT NOT NULL UNIQUE,
+  size_bytes    INTEGER NOT NULL,
+  uploaded_by   INTEGER NOT NULL REFERENCES users(id),
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS grades (
   assignment_id INTEGER NOT NULL REFERENCES assignments(id),
   student_id    INTEGER NOT NULL REFERENCES users(id),
@@ -77,5 +91,53 @@ CREATE TABLE IF NOT EXISTS grades (
   PRIMARY KEY (assignment_id, student_id)
 );
 `);
+
+// ---------------------------------------------------------------------
+// Migrations
+//
+// The CREATE TABLE statements above only run on a fresh database, so
+// columns added later have to be patched onto existing installs here.
+// Each step checks first, which makes this safe to run on every startup.
+// ---------------------------------------------------------------------
+function columnNames(table) {
+  return db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all()
+    .map((c) => c.name);
+}
+
+// Students are now stored as first name / last name / study group instead of
+// a single display name. display_name is kept as the rendered "First Last"
+// so existing queries and screens keep working.
+const userColumns = columnNames("users");
+const addedUserColumns = [];
+for (const col of ["first_name", "last_name", "group_name"]) {
+  if (!userColumns.includes(col)) {
+    db.exec(`ALTER TABLE users ADD COLUMN ${col} TEXT`);
+    addedUserColumns.push(col);
+  }
+}
+
+if (addedUserColumns.length > 0) {
+  // Backfill from display_name: everything before the first space is the
+  // first name, the rest is the last name.
+  db.exec(`
+    UPDATE users
+    SET first_name = CASE
+          WHEN instr(display_name, ' ') > 0
+          THEN substr(display_name, 1, instr(display_name, ' ') - 1)
+          ELSE display_name
+        END,
+        last_name = CASE
+          WHEN instr(display_name, ' ') > 0
+          THEN substr(display_name, instr(display_name, ' ') + 1)
+          ELSE ''
+        END
+    WHERE first_name IS NULL
+  `);
+  console.log(
+    `[db] migrated users table: added ${addedUserColumns.join(", ")}`
+  );
+}
 
 module.exports = db;

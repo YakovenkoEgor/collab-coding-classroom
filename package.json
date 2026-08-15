@@ -10,7 +10,7 @@
   "dependencies": {
     "express": "^4.19.2",
     "express-session": "^1.18.0",
-    "better-sqlite3": "^11.1.2",
+    "better-sqlite3": "^13.0.3",
     "bcryptjs": "^2.4.3",
     "dotenv": "^16.4.5"
   }

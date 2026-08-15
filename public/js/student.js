@@ -68,7 +68,7 @@ async function selectAssignment(assignment) {
   activeVersion = null;
   await loadAssignments(); // re-render sidebar highlight
   await renderMainPanel(); // awaits the editor so loadVersions can fill it
-  await Promise.all([loadVersions(), loadDiscussion()]);
+  await Promise.all([loadVersions(), loadDiscussion(), loadAssignmentFiles()]);
 }
 
 async function renderMainPanel() {
@@ -77,6 +77,7 @@ async function renderMainPanel() {
     <div class="card">
       <h2>${escapeHtml(activeAssignment.title)}</h2>
       <p class="muted">${escapeHtml(activeAssignment.description || "")}</p>
+      <div id="assignment-files"></div>
       <p class="muted" style="font-size:12px">Note: your public class must be named <code>Main</code> so it can be compiled and run.</p>
     </div>
 
@@ -131,6 +132,35 @@ async function setupEditor() {
     fontSize: 14,
     minimap: { enabled: false },
   });
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// Handouts the teacher attached to the assignment (PDF, DOCX, ...).
+async function loadAssignmentFiles() {
+  const { files } = await api(`/api/assignments/${activeAssignment.id}/files`);
+  const box = document.getElementById("assignment-files");
+  if (!box) return;
+  if (!files || files.length === 0) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML =
+    `<div class="file-list"><h4>Handouts</h4>` +
+    files
+      .map(
+        (f) =>
+          `<div class="file-item">
+             <a href="/api/assignments/${activeAssignment.id}/files/${f.id}/download">${escapeHtml(f.originalName)}</a>
+             <span class="muted">${formatSize(f.size)}</span>
+           </div>`
+      )
+      .join("") +
+    `</div>`;
 }
 
 // The newest version (the list comes back ordered by version_number DESC).
@@ -294,11 +324,28 @@ async function loadDiscussion() {
     if (m.linkedVersion) {
       linked = `<span class="linked-version" data-submission="${m.submission_id}">→ referring to v${m.linkedVersion}</span>`;
     }
-    div.innerHTML = `<div class="meta">${escapeHtml(m.authorName)} · ${new Date(m.created_at).toLocaleString()}</div>
+    // A student may delete only their own messages.
+    const canDelete = currentUser && m.author_id === currentUser.id;
+    const deleteBtn = canDelete
+      ? `<button class="delete-message" data-message="${m.id}" title="Delete message">×</button>`
+      : "";
+    div.innerHTML = `<div class="meta">${escapeHtml(m.authorName)} · ${new Date(m.created_at).toLocaleString()}${deleteBtn}</div>
       <div class="body">${escapeHtml(m.body)}</div>${linked}`;
     list.appendChild(div);
   });
   list.scrollTop = list.scrollHeight;
+
+  list.querySelectorAll(".delete-message").forEach((el) => {
+    el.onclick = async () => {
+      if (!confirm("Delete this message? This can't be undone.")) return;
+      try {
+        await api(`/api/discussions/messages/${el.dataset.message}`, { method: "DELETE" });
+        await loadDiscussion();
+      } catch (err) {
+        alert("Could not delete message: " + err.message);
+      }
+    };
+  });
 
   list.querySelectorAll(".linked-version").forEach((el) => {
     el.onclick = async () => {

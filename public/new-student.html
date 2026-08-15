@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Java Classroom — New student</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span> Java Classroom</div>
+    <div class="user-info">
+      <span id="whoami"></span>
+      <button class="secondary" id="logout-btn">Log out</button>
+    </div>
+  </div>
+
+  <div class="layout single">
+    <div class="main">
+      <a class="back-link" href="/teacher.html">← Back to dashboard</a>
+
+      <div class="card">
+        <h2>New student</h2>
+        <p class="muted">
+          Creates a student account. The student signs in with the username and
+          password you set here — pass them on and have the student change the
+          password later.
+        </p>
+
+        <div class="form-row">
+          <label for="s-first">First name *</label>
+          <input id="s-first" autocomplete="off" placeholder="Alex">
+        </div>
+
+        <div class="form-row">
+          <label for="s-last">Last name *</label>
+          <input id="s-last" autocomplete="off" placeholder="Chen">
+        </div>
+
+        <div class="form-row">
+          <label for="s-group">Study group</label>
+          <input id="s-group" autocomplete="off" placeholder="CS-101">
+        </div>
+
+        <div class="form-row">
+          <label for="s-username">Username (login) *</label>
+          <input id="s-username" autocomplete="off" placeholder="alexc">
+        </div>
+
+        <div class="form-row">
+          <label for="s-password">Temporary password *</label>
+          <input id="s-password" type="text" autocomplete="off" placeholder="at least 6 characters">
+          <span class="muted" style="font-size:12px">
+            Shown as plain text on purpose — you need to read it out to the student.
+          </span>
+        </div>
+
+        <div class="toolbar">
+          <button id="create-btn">Create student</button>
+          <button class="secondary" id="create-another-btn">Create and add another</button>
+        </div>
+
+        <div id="form-message"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/new-student.js"></script>
+</body>
+</html>

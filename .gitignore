@@ -19,6 +19,9 @@ pnpm-debug.log*
 .env.*
 !.env.example
 
+# --- Uploaded assignment handouts (teacher's files, not source code) ---
+uploads/
+
 # --- Database ---
 # The SQLite database holds real user accounts, password hashes and student
 # code. It is created automatically on first run - never commit it.
