@@ -3,8 +3,15 @@ let assignments = [];
 let activeAssignment = null;
 let activeStudent = null; // {studentId, displayName}
 let activeProfile = null; // student whose profile page is open, if any
+// Counts of submitted-but-ungraded work, keyed by assignment id and student id.
+let pendingReview = { byAssignment: {}, byStudent: {} };
 let versions = [];
 let activeVersion = null;
+let starterFiles = []; // starter project being authored in the new-assignment form
+let starterActive = null; // starter file shown in the textarea
+let starterEntry = null; // starter file the student's Run will start from
+let viewerFiles = []; // files of the version being reviewed
+let viewerFile = null; // which of them is shown in the editor
 let viewerEditor = null;
 let editorReady = null;
 
@@ -54,6 +61,27 @@ async function loadMe() {
   document.getElementById("whoami").textContent = `${user.displayName} (teacher)`;
 }
 
+// ---------- Ungraded work indicator ----------
+
+async function loadPendingReview() {
+  try {
+    pendingReview = await api("/api/assignments/review/pending");
+  } catch {
+    // A failure here must not blank out the dashboard - just show no badges.
+    pendingReview = { byAssignment: {}, byStudent: {} };
+  }
+}
+
+// The "!" badge shown next to an assignment title or a student's name.
+function reviewBadge(count, what) {
+  if (!count) return "";
+  const label =
+    what === "assignment"
+      ? `${count} submission(s) waiting to be graded`
+      : `${count} submitted assignment(s) waiting to be graded`;
+  return `<span class="needs-review" title="${label}">!</span>`;
+}
+
 // ---------- Assignments ----------
 
 async function loadAssignments() {
@@ -68,7 +96,7 @@ async function loadAssignments() {
   list.forEach((a) => {
     const div = document.createElement("div");
     div.className = "assignment-item" + (activeAssignment && activeAssignment.id === a.id ? " active" : "");
-    div.innerHTML = `<div class="title">${escapeHtml(a.title)}</div>
+    div.innerHTML = `<div class="title">${escapeHtml(a.title)}${reviewBadge(pendingReview.byAssignment[a.id], "assignment")}</div>
       <div class="meta">${new Date(a.created_at).toLocaleDateString()}</div>`;
     div.onclick = () => selectAssignment(a);
     container.appendChild(div);
@@ -98,9 +126,19 @@ function renderNewAssignmentForm() {
         <textarea id="a-desc" rows="4" placeholder="Explain the task..."></textarea>
       </div>
       <div class="form-row">
-        <label>Starter code (optional)</label>
-        <textarea id="a-starter" rows="6" style="font-family: var(--font-mono)"
-          placeholder="public class Main {\n    public static void main(String[] args) {\n\n    }\n}"></textarea>
+        <label>Starter project</label>
+        <span class="muted" style="font-size:12px">
+          The files a student's editor opens with. The one marked
+          <span class="entry-badge">main</span> is where their Run starts.
+        </span>
+        <div class="editor-layout" style="margin-top:6px">
+          <div class="file-tree wide" style="height:260px">
+            <div class="file-tree-header">Files</div>
+            <div id="starter-file-list"></div>
+            <button class="secondary" id="starter-new-file-btn" type="button">+ New file</button>
+          </div>
+          <textarea id="a-starter" style="font-family: var(--font-mono); flex:1; height:260px; resize:vertical"></textarea>
+        </div>
       </div>
       <div class="form-row">
         <label>Handouts (optional)</label>
@@ -118,10 +156,19 @@ function renderNewAssignmentForm() {
   const fileInput = document.getElementById("a-files");
   fileInput.onchange = () => renderChosenFiles(fileInput.files);
 
+  // Start every new assignment from a one-file project.
+  starterFiles = [{ filename: "Main.java", content: DEFAULT_STARTER }];
+  starterActive = "Main.java";
+  starterEntry = "Main.java";
+  document.getElementById("a-starter").value = DEFAULT_STARTER;
+  document.getElementById("a-starter").addEventListener("input", syncStarterTextarea);
+  document.getElementById("starter-new-file-btn").onclick = addStarterFile;
+  renderStarterTree();
+
   document.getElementById("create-assignment-btn").onclick = async () => {
     const title = document.getElementById("a-title").value.trim();
     const description = document.getElementById("a-desc").value.trim();
-    const starterCode = document.getElementById("a-starter").value;
+    syncStarterTextarea();
     if (!title) return alert("Title is required");
 
     const btn = document.getElementById("create-assignment-btn");
@@ -131,7 +178,13 @@ function renderNewAssignmentForm() {
       const files = await readFilesAsBase64(fileInput.files);
       const { assignment } = await api("/api/assignments", {
         method: "POST",
-        body: JSON.stringify({ title, description, starterCode, files }),
+        body: JSON.stringify({
+          title,
+          description,
+          files,
+          starterFiles,
+          starterEntry,
+        }),
       });
       await loadAssignments();
       selectAssignment(assignment);
@@ -141,6 +194,115 @@ function renderNewAssignmentForm() {
       btn.textContent = "Create assignment";
     }
   };
+}
+
+// ---------- Starter project in the new-assignment form ----------
+
+const JAVA_FILENAME = /^[A-Za-z_][A-Za-z0-9_]*\.java$/;
+const DEFAULT_STARTER =
+  "public class Main {\n    public static void main(String[] args) {\n        \n    }\n}\n";
+
+// The textarea holds whichever starter file is selected, so its text has to be
+// written back before the selection changes or the form is submitted.
+function syncStarterTextarea() {
+  const box = document.getElementById("a-starter");
+  if (!box) return;
+  const file = starterFiles.find((f) => f.filename === starterActive);
+  if (file) file.content = box.value;
+}
+
+function openStarterFile(filename) {
+  syncStarterTextarea();
+  starterActive = filename;
+  const file = starterFiles.find((f) => f.filename === filename);
+  document.getElementById("a-starter").value = file ? file.content : "";
+  renderStarterTree();
+}
+
+function renderStarterTree() {
+  const list = document.getElementById("starter-file-list");
+  if (!list) return;
+  list.innerHTML = "";
+
+  starterFiles.forEach((file) => {
+    const div = document.createElement("div");
+    div.className = "file-node" + (file.filename === starterActive ? " active" : "");
+
+    const name = document.createElement("span");
+    name.className = "file-node-name";
+    name.textContent = file.filename;
+    name.title = file.filename; // full name stays readable when ellipsized
+    name.onclick = () => openStarterFile(file.filename);
+    div.appendChild(name);
+
+    if (file.filename === starterEntry) {
+      const badge = document.createElement("span");
+      badge.className = "entry-badge";
+      badge.textContent = "main";
+      badge.title = "The student's Run starts from this file";
+      div.appendChild(badge);
+    } else {
+      // Unlike the student's editor, the entry file here is chosen explicitly -
+      // the teacher is authoring the project, not running it.
+      const setEntry = document.createElement("button");
+      setEntry.className = "set-entry";
+      setEntry.type = "button";
+      setEntry.textContent = "set main";
+      setEntry.title = "Make this the file the student's Run starts from";
+      setEntry.onclick = (e) => {
+        e.stopPropagation();
+        starterEntry = file.filename;
+        renderStarterTree();
+      };
+      div.appendChild(setEntry);
+
+      const del = document.createElement("button");
+      del.className = "delete-file";
+      del.type = "button";
+      del.textContent = "×";
+      del.title = "Remove file";
+      del.onclick = (e) => {
+        e.stopPropagation();
+        removeStarterFile(file.filename);
+      };
+      div.appendChild(del);
+    }
+
+    list.appendChild(div);
+  });
+}
+
+function addStarterFile() {
+  const raw = prompt("New file name (e.g. Helper.java):", "Helper.java");
+  if (!raw) return;
+  const filename = raw.trim().endsWith(".java") ? raw.trim() : `${raw.trim()}.java`;
+
+  if (!JAVA_FILENAME.test(filename)) {
+    alert(
+      "A Java file name must start with a letter or underscore, contain only letters, digits and underscores, and end with .java — for example Helper.java"
+    );
+    return;
+  }
+  if (starterFiles.some((f) => f.filename === filename)) {
+    alert(`"${filename}" already exists in this starter project.`);
+    return;
+  }
+
+  const className = filename.replace(/\.java$/, "");
+  syncStarterTextarea();
+  starterFiles.push({ filename, content: `public class ${className} {\n    \n}\n` });
+  openStarterFile(filename);
+}
+
+function removeStarterFile(filename) {
+  if (starterFiles.length <= 1) return;
+  if (filename === starterEntry) return; // the entry file can't be removed
+  starterFiles = starterFiles.filter((f) => f.filename !== filename);
+  if (starterActive === filename) {
+    openStarterFile(starterEntry);
+  } else {
+    renderStarterTree();
+  }
 }
 
 function renderChosenFiles(fileList) {
@@ -285,7 +447,13 @@ function renderStudentPanel() {
 
     <div class="card">
       <h3>Code</h3>
-      <div class="editor-wrap" id="editor-container"></div>
+      <div class="editor-layout">
+        <div class="file-tree">
+          <div class="file-tree-header">Project</div>
+          <div id="file-list"><p class="muted" style="font-size:12px">—</p></div>
+        </div>
+        <div class="editor-wrap" id="editor-container"></div>
+      </div>
       <div class="output-panel" id="output-panel">Select a version to view its output.</div>
     </div>
 
@@ -293,7 +461,10 @@ function renderStudentPanel() {
       <h3>Grade</h3>
       <div class="grade-box">
         <label class="muted">Score (0–${MAX_SCORE}):</label>
-        <input type="number" id="grade-score" min="${MIN_SCORE}" max="${MAX_SCORE}" step="1">
+        <!-- No min/max on purpose: they would stop the stepper dead at the
+             bounds, and we want it to wrap around instead. The range is
+             enforced in wrapScore(), in saveGrade() and on the server. -->
+        <input type="number" id="grade-score" step="1" value="${MAX_SCORE}">
         <button id="save-grade-btn">Save grade</button>
       </div>
     </div>
@@ -312,6 +483,9 @@ function renderStudentPanel() {
     renderOverview();
   };
   document.getElementById("save-grade-btn").onclick = saveGrade;
+  // Covers the stepper arrows, the up/down keys and the scroll wheel - all of
+  // them fire "input" after the value changes.
+  document.getElementById("grade-score").addEventListener("input", (e) => wrapScore(e.target));
   document.getElementById("send-message-btn").onclick = sendMessage;
   document.getElementById("message-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") sendMessage();
@@ -349,15 +523,61 @@ async function loadVersions() {
     const div = document.createElement("div");
     div.className = "version-item" + (activeVersion && activeVersion.id === v.id ? " active" : "");
     div.textContent = `v${v.version_number} — ${v.status} — ${new Date(v.created_at).toLocaleString()}`;
-    div.onclick = async () => {
-      await editorReady;
-      viewerEditor.setValue(v.code);
-      activeVersion = v;
-      renderOutput(v.last_run_stdout, v.last_run_stderr, v.last_run_status);
-      loadVersions();
-    };
+    div.onclick = () => openVersion(v);
     list.appendChild(div);
     if (idx === 0 && !activeVersion) div.click(); // auto-select latest
+  });
+}
+
+// Opens a version: loads its files into the read-only tree and shows the
+// entry file first.
+async function openVersion(v) {
+  await editorReady;
+  activeVersion = v;
+  try {
+    const { files } = await api(`/api/submissions/${v.id}/files`);
+    viewerFiles = files.length
+      ? files
+      : [{ filename: "Main.java", content: v.code, isEntry: 1 }];
+  } catch {
+    viewerFiles = [{ filename: "Main.java", content: v.code, isEntry: 1 }];
+  }
+  const entry = viewerFiles.find((f) => f.isEntry) || viewerFiles[0];
+  showFile(entry.filename);
+  renderOutput(v.last_run_stdout, v.last_run_stderr, v.last_run_status);
+  loadVersions();
+}
+
+function showFile(filename) {
+  const file = viewerFiles.find((f) => f.filename === filename) || viewerFiles[0];
+  if (!file) return;
+  viewerFile = file.filename;
+  viewerEditor.setValue(file.content);
+  renderViewerTree();
+}
+
+function renderViewerTree() {
+  const list = document.getElementById("file-list");
+  if (!list) return;
+  list.innerHTML = "";
+  viewerFiles.forEach((file) => {
+    const div = document.createElement("div");
+    div.className = "file-node" + (file.filename === viewerFile ? " active" : "");
+    const name = document.createElement("span");
+    name.className = "file-node-name";
+    name.textContent = file.filename;
+    name.title = file.filename; // full name stays readable when ellipsized
+    div.appendChild(name);
+    // Shows which file the student ran, so the reviewer starts in the right place.
+    if (file.isEntry) {
+      const badge = document.createElement("span");
+      badge.className = "entry-badge";
+      badge.textContent = "main";
+      badge.title = "The student ran the program from this file";
+      div.appendChild(badge);
+    }
+    div.onclick = () => showFile(file.filename);
+    list.appendChild(div);
   });
 }
 
@@ -378,12 +598,34 @@ function renderOutput(stdout, stderr, status) {
 
 // ---------- Grading ----------
 
+// Makes the score wrap around instead of stopping at the ends: stepping up
+// from 15 gives 0, stepping down from 0 gives 15. Anything further out of
+// range (typed by hand) is clamped rather than wrapped, so typing "99"
+// doesn't silently become 3.
+function wrapScore(input) {
+  const raw = input.value.trim();
+  if (raw === "") return; // empty means "no grade" - leave it alone
+  const value = Number(raw);
+  if (!Number.isInteger(value)) return;
+
+  if (value > MAX_SCORE) {
+    input.value = value === MAX_SCORE + 1 ? MIN_SCORE : MAX_SCORE;
+  } else if (value < MIN_SCORE) {
+    input.value = value === MIN_SCORE - 1 ? MAX_SCORE : MIN_SCORE;
+  }
+}
+
 async function loadGrade() {
   const { grade } = await api(
     `/api/grades/assignment/${activeAssignment.id}?studentId=${activeStudent.studentId}`
   );
   const scoreInput = document.getElementById("grade-score");
-  if (scoreInput && grade) scoreInput.value = grade.score ?? "";
+  if (!scoreInput) return;
+  // Ungraded work starts at the top of the scale; an existing grade wins.
+  scoreInput.value =
+    grade && grade.score !== null && grade.score !== undefined
+      ? grade.score
+      : MAX_SCORE;
 }
 
 async function saveGrade() {
@@ -404,6 +646,10 @@ async function saveGrade() {
         score,
       }),
     });
+    // Grading is what clears a badge, so refresh both sidebar lists.
+    await loadPendingReview();
+    await loadAssignments();
+    await loadStudentManage();
     alert("Grade saved");
   } catch (err) {
     alert("Could not save grade: " + err.message);
@@ -447,12 +693,7 @@ async function loadDiscussion() {
     el.onclick = async () => {
       const subId = parseInt(el.dataset.submission, 10);
       const v = versions.find((x) => x.id === subId);
-      if (v) {
-        await editorReady;
-        viewerEditor.setValue(v.code);
-        activeVersion = v;
-        renderOutput(v.last_run_stdout, v.last_run_stderr, v.last_run_status);
-      }
+      if (v) await openVersion(v);
     };
   });
 }
@@ -513,7 +754,7 @@ async function loadStudentManage() {
       div.className =
         "assignment-item" +
         (activeProfile && activeProfile.id === u.id ? " active" : "");
-      div.innerHTML = `<div class="title">${escapeHtml(u.displayName)}</div>
+      div.innerHTML = `<div class="title">${escapeHtml(u.displayName)}${reviewBadge(pendingReview.byStudent[u.id], "student")}</div>
         <div class="meta">${escapeHtml(u.username)}</div>`;
       div.onclick = () => selectStudentProfile(u.id);
       container.appendChild(div);
@@ -592,6 +833,7 @@ document.getElementById("logout-btn").onclick = async () => {
 (async function init() {
   initEditor();
   await loadMe();
+  await loadPendingReview();
   await loadAssignments();
   await loadStudentManage();
 })();

@@ -3,6 +3,8 @@ let assignments = [];
 let activeAssignment = null;
 let versions = [];
 let activeVersion = null; // the version currently loaded into the editor
+let projectFiles = []; // [{ filename, content }] - the project in the editor
+let activeFile = null; // file open in the editor; Run starts from this one
 let editor = null;
 let editorReady = null; // promise
 let selectedVersionForMessage = null;
@@ -78,12 +80,20 @@ async function renderMainPanel() {
       <h2>${escapeHtml(activeAssignment.title)}</h2>
       <p class="muted">${escapeHtml(activeAssignment.description || "")}</p>
       <div id="assignment-files"></div>
-      <p class="muted" style="font-size:12px">Note: your public class must be named <code>Main</code> so it can be compiled and run.</p>
+      <p class="muted" style="font-size:12px">Note: a file's public class must match its file name — <code>Main.java</code> holds <code>public class Main</code>.</p>
     </div>
 
     <div class="card">
       <h3>Code editor</h3>
-      <div class="editor-wrap" id="editor-container"></div>
+      <div class="editor-layout">
+        <div class="file-tree">
+          <div class="file-tree-header">Project</div>
+          <div id="file-list"></div>
+          <button class="secondary" id="new-file-btn">+ New file</button>
+        </div>
+        <div class="editor-wrap" id="editor-container"></div>
+      </div>
+      <div id="entry-hint" class="muted"></div>
       <div id="readonly-banner"></div>
       <div class="toolbar">
         <button id="run-btn">▶ Run</button>
@@ -110,6 +120,7 @@ async function renderMainPanel() {
   `;
 
   await setupEditor();
+  document.getElementById("new-file-btn").onclick = addFile;
   document.getElementById("run-btn").onclick = runCode;
   document.getElementById("save-draft-btn").onclick = () => saveVersion("draft");
   document.getElementById("submit-btn").onclick = () => saveVersion("submitted");
@@ -122,16 +133,154 @@ async function renderMainPanel() {
 async function setupEditor() {
   await editorReady;
   const container = document.getElementById("editor-container");
-  const starter = activeAssignment.starter_code ||
+
+  // The assignment's starter project - possibly several files the teacher
+  // prepared. Falls back to a bare Main.java if it can't be loaded.
+  const fallback =
+    activeAssignment.starter_code ||
     "public class Main {\n    public static void main(String[] args) {\n        \n    }\n}\n";
+  try {
+    const starter = await api(`/api/assignments/${activeAssignment.id}/starter`);
+    projectFiles = starter.files.length
+      ? starter.files.map((f) => ({ filename: f.filename, content: f.content }))
+      : [{ filename: "Main.java", content: fallback }];
+    activeFile = starter.entry || projectFiles[0].filename;
+  } catch {
+    projectFiles = [{ filename: "Main.java", content: fallback }];
+    activeFile = "Main.java";
+  }
+
   editor = monaco.editor.create(container, {
-    value: starter,
+    value: currentFile().content,
     language: "java",
     theme: "vs-dark",
     automaticLayout: true,
     fontSize: 14,
     minimap: { enabled: false },
   });
+  renderFileTree();
+}
+
+// ---------------------------------------------------------------------
+// Project files
+// ---------------------------------------------------------------------
+
+const JAVA_FILENAME = /^[A-Za-z_][A-Za-z0-9_]*\.java$/;
+
+function currentFile() {
+  return projectFiles.find((f) => f.filename === activeFile) || projectFiles[0];
+}
+
+// The editor is the single source of truth while a file is open, so its text
+// has to be written back before anything reads the project.
+function syncEditorToFile() {
+  if (!editor) return;
+  const file = currentFile();
+  if (file) file.content = editor.getValue();
+}
+
+function renderFileTree() {
+  const list = document.getElementById("file-list");
+  if (!list) return;
+  list.innerHTML = "";
+
+  projectFiles.forEach((file) => {
+    const div = document.createElement("div");
+    div.className = "file-node" + (file.filename === activeFile ? " active" : "");
+
+    const name = document.createElement("span");
+    name.className = "file-node-name";
+    name.textContent = file.filename;
+    name.title = file.filename; // full name stays readable when ellipsized
+    name.onclick = () => openFile(file.filename);
+    div.appendChild(name);
+
+    // The open file is the one Run starts from - mark it the way an IDE does.
+    if (file.filename === activeFile) {
+      const badge = document.createElement("span");
+      badge.className = "entry-badge";
+      badge.textContent = "main";
+      badge.title = "Run starts from this file";
+      div.appendChild(badge);
+    } else if (isEditable() && projectFiles.length > 1) {
+      const del = document.createElement("button");
+      del.className = "delete-file";
+      del.textContent = "×";
+      del.title = "Delete file";
+      del.onclick = (e) => {
+        e.stopPropagation();
+        deleteFile(file.filename);
+      };
+      div.appendChild(del);
+    }
+
+    list.appendChild(div);
+  });
+
+  const newBtn = document.getElementById("new-file-btn");
+  if (newBtn) newBtn.disabled = !isEditable();
+
+  const hint = document.getElementById("entry-hint");
+  if (hint) hint.textContent = `▶ Run compiles every file and starts from ${activeFile}`;
+}
+
+function openFile(filename) {
+  syncEditorToFile();
+  activeFile = filename;
+  const file = currentFile();
+  editor.setValue(file ? file.content : "");
+  renderFileTree();
+}
+
+function addFile() {
+  if (!isEditable()) return;
+  const raw = prompt("New file name (e.g. Helper.java):", "Helper.java");
+  if (!raw) return;
+  const filename = raw.trim().endsWith(".java") ? raw.trim() : `${raw.trim()}.java`;
+
+  if (!JAVA_FILENAME.test(filename)) {
+    alert(
+      "A Java file name must start with a letter or underscore, contain only letters, digits and underscores, and end with .java — for example Helper.java"
+    );
+    return;
+  }
+  if (projectFiles.some((f) => f.filename === filename)) {
+    alert(`"${filename}" already exists in this project.`);
+    return;
+  }
+
+  const className = filename.replace(/\.java$/, "");
+  syncEditorToFile();
+  projectFiles.push({
+    filename,
+    content: `public class ${className} {\n    \n}\n`,
+  });
+  openFile(filename);
+}
+
+function deleteFile(filename) {
+  if (!isEditable()) return;
+  if (projectFiles.length <= 1) return;
+  if (!confirm(`Delete ${filename}? This only affects your unsaved project.`)) return;
+
+  projectFiles = projectFiles.filter((f) => f.filename !== filename);
+  if (activeFile === filename) {
+    activeFile = projectFiles[0].filename;
+    editor.setValue(projectFiles[0].content);
+  }
+  renderFileTree();
+}
+
+// Replaces the whole project - used when a saved version is opened.
+function loadProject(files, entryFilename) {
+  projectFiles = files.map((f) => ({ filename: f.filename, content: f.content }));
+  const entry =
+    entryFilename && projectFiles.some((f) => f.filename === entryFilename)
+      ? entryFilename
+      : projectFiles[0].filename;
+  activeFile = entry;
+  editor.setValue(currentFile().content);
+  renderFileTree();
 }
 
 function formatSize(bytes) {
@@ -175,11 +324,19 @@ function isEditable() {
   return activeVersion !== null && activeVersion.id === latest.id;
 }
 
-// Loads a version into the editor and switches edit/read-only mode.
+// Loads a version's whole project into the editor and switches edit/read-only
+// mode.
 async function openVersion(v) {
   await editorReady;
-  editor.setValue(v.code);
   activeVersion = v;
+  try {
+    const { files } = await api(`/api/submissions/${v.id}/files`);
+    const entry = (files.find((f) => f.isEntry) || files[0] || {}).filename;
+    loadProject(files.length ? files : [{ filename: "Main.java", content: v.code }], entry);
+  } catch {
+    // Fall back to the single-file view rather than leaving the editor blank.
+    loadProject([{ filename: "Main.java", content: v.code }], "Main.java");
+  }
   renderOutput(v.last_run_stdout, v.last_run_stderr, v.last_run_status);
   await loadVersions();
 }
@@ -189,6 +346,8 @@ async function openVersion(v) {
 function applyEditMode() {
   const editable = isEditable();
   if (editor) editor.updateOptions({ readOnly: !editable });
+  // The tree shows delete buttons only while the project is editable.
+  renderFileTree();
 
   const saveBtn = document.getElementById("save-draft-btn");
   const submitBtn = document.getElementById("submit-btn");
@@ -219,8 +378,17 @@ async function loadVersions() {
   if (!activeVersion && versions.length > 0) {
     const latest = latestVersion();
     await editorReady;
-    editor.setValue(latest.code);
     activeVersion = latest;
+    try {
+      const { files } = await api(`/api/submissions/${latest.id}/files`);
+      const entry = (files.find((f) => f.isEntry) || files[0] || {}).filename;
+      loadProject(
+        files.length ? files : [{ filename: "Main.java", content: latest.code }],
+        entry
+      );
+    } catch {
+      loadProject([{ filename: "Main.java", content: latest.code }], "Main.java");
+    }
     renderOutput(latest.last_run_stdout, latest.last_run_stderr, latest.last_run_status);
   }
 
@@ -259,14 +427,15 @@ function renderOutput(stdout, stderr, status) {
 
 async function runCode() {
   await editorReady;
-  const code = editor.getValue();
+  syncEditorToFile();
   const btn = document.getElementById("run-btn");
   btn.disabled = true;
   btn.textContent = "Running…";
   try {
     const result = await api("/api/submissions/run", {
       method: "POST",
-      body: JSON.stringify({ code }),
+      // Every file is compiled; the open one is the entry point.
+      body: JSON.stringify({ files: projectFiles, entry: activeFile }),
     });
     renderOutput(result.stdout, result.stderr || result.compileOutput, result.status);
   } catch (err) {
@@ -283,14 +452,15 @@ async function saveVersion(status) {
     alert("This is an older version and can't be saved or submitted. Go back to your latest version first.");
     return;
   }
-  const code = editor.getValue();
+  syncEditorToFile();
   const btn = status === "submitted" ? document.getElementById("submit-btn") : document.getElementById("save-draft-btn");
   btn.disabled = true;
   try {
     const { submission } = await api(`/api/submissions/assignment/${activeAssignment.id}`, {
       method: "POST",
       body: JSON.stringify({
-        code,
+        files: projectFiles,
+        entry: activeFile,
         status,
         // Tells the server which version this edit is based on; it rejects
         // anything that isn't the latest one.

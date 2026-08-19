@@ -22,6 +22,15 @@ const NODE_TIMEOUT_MS = (TIME_LIMIT_SECONDS + 15) * 1000;
 // Helpers
 // ---------------------------------------------------------------------
 
+// `docker` exists but the daemon is down: the command exits non-zero with a
+// connection error. Without this check that surfaces to the student as a
+// compilation error with a Docker message in it.
+function isDockerUnavailable(stderr) {
+  return /failed to connect to the docker API|cannot connect to the docker daemon|error during connect|docker daemon is not running/i.test(
+    stderr || ""
+  );
+}
+
 function makeTempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
@@ -87,16 +96,78 @@ function runDocker(args, stdin) {
 }
 
 // ---------------------------------------------------------------------
+// Project helpers
+// ---------------------------------------------------------------------
+
+// Only plain Java source names. This is a security boundary as much as a
+// convenience one: the name becomes a path inside the mounted directory, so
+// anything with a slash or ".." must never get through.
+const JAVA_FILENAME = /^[A-Za-z_][A-Za-z0-9_]*\.java$/;
+
+function isValidJavaFilename(name) {
+  return typeof name === "string" && JAVA_FILENAME.test(name);
+}
+
+// javac puts a class from `package a.b;` into a/b/, and java then needs the
+// fully qualified name. Comments and strings are not parsed - a declaration
+// that isn't the real one would be unusual enough to not be worth the
+// machinery.
+function packageOf(source) {
+  const match = /^[ \t]*package[ \t]+([A-Za-z_][A-Za-z0-9_.]*)[ \t]*;/m.exec(
+    String(source || "")
+  );
+  return match ? match[1] : null;
+}
+
+// The class to hand to `java`: "Main", or "tools.Main" when the file declares
+// a package.
+function entryClassName(file) {
+  const className = file.filename.replace(/\.java$/, "");
+  const pkg = packageOf(file.content);
+  return pkg ? `${pkg}.${className}` : className;
+}
+
+class SandboxError extends Error {}
+
+// ---------------------------------------------------------------------
 // Public API - mirrors the shape the rest of the app expects
 // (stdout, stderr, compileOutput, status, time, memory)
 // ---------------------------------------------------------------------
 
-async function runJavaCode(sourceCode, stdin = "") {
+// Compiles every file in the project and runs the one the student picked,
+// the way an IDE runs the file that's currently open.
+// files: [{ filename, content }], entryFilename: which one holds main().
+async function runJavaProject(files, entryFilename, stdin = "") {
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new SandboxError("The project has no files");
+  }
+  for (const file of files) {
+    if (!isValidJavaFilename(file.filename)) {
+      throw new SandboxError(
+        `"${file.filename}" is not a valid Java file name (expected something like Main.java)`
+      );
+    }
+  }
+  const seen = new Set();
+  for (const file of files) {
+    if (seen.has(file.filename)) {
+      throw new SandboxError(`Duplicate file name: ${file.filename}`);
+    }
+    seen.add(file.filename);
+  }
+
+  const entry = files.find((f) => f.filename === entryFilename);
+  if (!entry) {
+    throw new SandboxError(`Entry file "${entryFilename}" is not part of the project`);
+  }
+
   const codeDir = makeTempDir("javasandbox-src-");
   const outDir = makeTempDir("javasandbox-out-");
 
   try {
-    fs.writeFileSync(path.join(codeDir, "Main.java"), sourceCode, "utf8");
+    for (const file of files) {
+      fs.writeFileSync(path.join(codeDir, file.filename), file.content ?? "", "utf8");
+    }
     // Make the output dir writable by any container user (openjdk images
     // often run as root by default, but this keeps it safe either way).
     fs.chmodSync(outDir, 0o777);
@@ -117,18 +188,23 @@ async function runJavaCode(sourceCode, stdin = "") {
       "timeout",
       String(TIME_LIMIT_SECONDS),
       "javac",
-      "/code/Main.java",
+      // Every file is passed explicitly - there's no shell in the container
+      // to expand a wildcard.
+      ...files.map((f) => `/code/${f.filename}`),
       "-d",
       "/out",
     ];
 
     const compileResult = await runDocker(compileArgs);
 
-    if (compileResult.exitCode === -1) {
-      // Docker itself failed to run (not installed / not running)
+    if (compileResult.exitCode === -1 || isDockerUnavailable(compileResult.stderr)) {
+      // Docker itself failed to run (not installed, or the daemon is stopped)
       return {
         stdout: "",
-        stderr: compileResult.stderr,
+        stderr:
+          compileResult.exitCode === -1
+            ? compileResult.stderr
+            : "The code sandbox is unavailable: Docker is not running on the server. Ask your teacher to start it.",
         compileOutput: "",
         status: "Sandbox Error",
       };
@@ -173,15 +249,18 @@ async function runJavaCode(sourceCode, stdin = "") {
       `-Xmx${JVM_HEAP}`,
       "-cp",
       "/out",
-      "Main",
+      entryClassName(entry),
     ];
 
     const runResult = await runDocker(runArgs, stdin);
 
-    if (runResult.exitCode === -1) {
+    if (runResult.exitCode === -1 || isDockerUnavailable(runResult.stderr)) {
       return {
         stdout: "",
-        stderr: runResult.stderr,
+        stderr:
+          runResult.exitCode === -1
+            ? runResult.stderr
+            : "The code sandbox is unavailable: Docker is not running on the server. Ask your teacher to start it.",
         compileOutput: "",
         status: "Sandbox Error",
       };
@@ -217,4 +296,18 @@ async function runJavaCode(sourceCode, stdin = "") {
   }
 }
 
-module.exports = { runJavaCode };
+// Single-file convenience wrapper, kept so older callers keep working.
+async function runJavaCode(sourceCode, stdin = "") {
+  return runJavaProject(
+    [{ filename: "Main.java", content: sourceCode }],
+    "Main.java",
+    stdin
+  );
+}
+
+module.exports = {
+  runJavaProject,
+  runJavaCode,
+  SandboxError,
+  isValidJavaFilename,
+};
