@@ -51,8 +51,12 @@ async function loadAssignments() {
   list.forEach((a) => {
     const div = document.createElement("div");
     div.className = "assignment-item" + (activeAssignment && activeAssignment.id === a.id ? " active" : "");
-    div.innerHTML = `<div class="title">${escapeHtml(a.title)}</div>
-      <div class="meta">${new Date(a.created_at).toLocaleDateString()}</div>`;
+    div.innerHTML = `<div class="title">${escapeHtml(a.title)}${deadlineMark(a)}</div>
+      <div class="meta">${
+        a.deadline
+          ? "due " + formatDeadline(a.deadline)
+          : new Date(a.created_at).toLocaleDateString()
+      }</div>`;
     div.onclick = () => selectAssignment(a);
     container.appendChild(div);
   });
@@ -62,6 +66,62 @@ function escapeHtml(str) {
   const d = document.createElement("div");
   d.textContent = str;
   return d.innerHTML;
+}
+
+// ---------------------------------------------------------------------
+// Deadlines (mirrors what the teacher sees in a student's profile)
+// ---------------------------------------------------------------------
+
+function formatDeadline(deadline) {
+  const date = new Date(String(deadline).replace(" ", "T"));
+  return Number.isNaN(date.getTime()) ? deadline : date.toLocaleString();
+}
+
+function deadlineHint(row) {
+  const hours = row.hoursLeft;
+  if (hours === null || hours === undefined) return "";
+  if (row.deadlineState === "overdue") {
+    const late = Math.abs(hours);
+    return late < 48 ? `просрочено на ${late} ч` : `просрочено на ${Math.round(late / 24)} дн`;
+  }
+  return hours < 24 ? `осталось ${hours} ч` : `осталось ${Math.round(hours / 24)} дн`;
+}
+
+function deadlineMark(row) {
+  if (!row.deadlineState) return "";
+  const cls = row.deadlineState === "overdue" ? "deadline-flag overdue" : "deadline-flag";
+  const label = row.deadlineState === "overdue" ? "просрочено" : "скоро срок";
+  return ` <span class="${cls}" title="${escapeHtml(deadlineHint(row))}">${label}</span>`;
+}
+
+// Re-reads the assignment list (which carries the deadline state) and updates
+// both the sidebar and the notice on the open assignment.
+async function refreshDeadlineState() {
+  await loadAssignments();
+  const fresh = assignments.find((a) => a.id === activeAssignment.id);
+  if (fresh) activeAssignment = fresh;
+  const box = document.getElementById("deadline-notice");
+  if (box) box.innerHTML = renderDeadlineNotice(activeAssignment);
+}
+
+// The line shown on the open assignment: the due date, plus a warning box
+// while the work is unsubmitted and the deadline is close or gone.
+function renderDeadlineNotice(assignment) {
+  if (!assignment.deadline) return "";
+
+  const due = `<p class="muted" style="font-size:13px">
+      Срок сдачи: <strong>${escapeHtml(formatDeadline(assignment.deadline))}</strong>
+    </p>`;
+
+  if (!assignment.deadlineState) return due;
+
+  const overdue = assignment.deadlineState === "overdue";
+  return `${due}
+    <div class="warning-banner${overdue ? " overdue" : ""}">
+      <strong>${overdue ? "Срок сдачи истёк." : "Срок сдачи близко."}</strong>
+      Работа ещё не сдана — ${escapeHtml(deadlineHint(assignment))}.
+      Нажмите «Submit», когда будете готовы.
+    </div>`;
 }
 
 async function selectAssignment(assignment) {
@@ -79,6 +139,7 @@ async function renderMainPanel() {
     <div class="card">
       <h2>${escapeHtml(activeAssignment.title)}</h2>
       <p class="muted">${escapeHtml(activeAssignment.description || "")}</p>
+      <div id="deadline-notice">${renderDeadlineNotice(activeAssignment)}</div>
       <div id="assignment-files"></div>
       <p class="muted" style="font-size:12px">Note: a file's public class must match its file name — <code>Main.java</code> holds <code>public class Main</code>.</p>
     </div>
@@ -470,6 +531,8 @@ async function saveVersion(status) {
     activeVersion = submission;
     renderOutput(submission.last_run_stdout, submission.last_run_stderr, submission.last_run_status);
     await loadVersions();
+    // Submitting clears the deadline warning, so refresh what depends on it.
+    if (status === "submitted") await refreshDeadlineState();
   } catch (err) {
     alert("Could not save: " + err.message);
     await loadVersions(); // re-sync in case another tab added a newer version

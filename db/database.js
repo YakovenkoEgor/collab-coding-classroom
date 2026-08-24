@@ -135,9 +135,13 @@ function columnNames(table) {
 // Students are now stored as first name / last name / study group instead of
 // a single display name. display_name is kept as the rendered "First Last"
 // so existing queries and screens keep working.
+// email: optional, imported from CSV.
+// initial_password: the generated password, kept in clear text so the teacher
+// can read it back out of the student's profile and pass it on. See the note
+// in routes/auth.js - it is only ever sent to a teacher.
 const userColumns = columnNames("users");
 const addedUserColumns = [];
-for (const col of ["first_name", "last_name", "group_name"]) {
+for (const col of ["first_name", "last_name", "group_name", "email", "initial_password"]) {
   if (!userColumns.includes(col)) {
     db.exec(`ALTER TABLE users ADD COLUMN ${col} TEXT`);
     addedUserColumns.push(col);
@@ -188,6 +192,13 @@ if (legacySubmissions.length > 0) {
   console.log(
     `[db] migrated ${legacySubmissions.length} single-file submission(s) to Main.java`
   );
+}
+
+// Optional due date for an assignment, stored as an ISO-ish
+// "YYYY-MM-DD HH:MM" string so it compares correctly with datetime('now').
+if (!columnNames("assignments").includes("deadline")) {
+  db.exec("ALTER TABLE assignments ADD COLUMN deadline TEXT");
+  console.log("[db] migrated assignments table: added deadline");
 }
 
 // Assignments created before starter projects keep their starter in

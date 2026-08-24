@@ -18,6 +18,29 @@
         <button type="submit">Log in</button>
       </form>
       <div class="login-error" id="login-error" style="display:none"></div>
+
+      <div id="bootstrap-section" style="display:none">
+        <hr style="border-color: var(--border); margin: 20px 0">
+        <p class="sub" id="bootstrap-note" style="margin-bottom:10px"></p>
+        <button class="secondary" id="bootstrap-toggle" style="width:100%">
+          Create a teacher account
+        </button>
+
+        <form id="bootstrap-form" style="display:none">
+          <label for="t-first">First name</label>
+          <input id="t-first" autocomplete="off" required>
+          <label for="t-last">Last name</label>
+          <input id="t-last" autocomplete="off" required>
+          <label for="t-username">Username (login)</label>
+          <input id="t-username" autocomplete="off" required>
+          <label for="t-email">Email</label>
+          <input id="t-email" type="email" autocomplete="off" required>
+          <label for="t-password">Password</label>
+          <input id="t-password" type="password" autocomplete="new-password" required>
+          <button type="submit">Create account and sign in</button>
+        </form>
+        <div class="login-error" id="bootstrap-error" style="display:none"></div>
+      </div>
     </div>
   </div>
   <script src="/js/login.js"></script>

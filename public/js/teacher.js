@@ -7,6 +7,9 @@ let activeProfile = null; // student whose profile page is open, if any
 let pendingReview = { byAssignment: {}, byStudent: {} };
 let versions = [];
 let activeVersion = null;
+let editingAssignmentId = null; // set while the form is editing, null when creating
+let existingHandouts = []; // handouts already attached to the assignment being edited
+let removedHandoutIds = []; // marked for removal, applied on save
 let starterFiles = []; // starter project being authored in the new-assignment form
 let starterActive = null; // starter file shown in the textarea
 let starterEntry = null; // starter file the student's Run will start from
@@ -113,17 +116,47 @@ document.getElementById("new-assignment-btn").onclick = async () => {
 };
 
 function renderNewAssignmentForm() {
+  renderAssignmentForm(null);
+}
+
+// One form for both creating and editing. `existing` is null when creating,
+// otherwise { assignment, files, starterFiles } as returned by the API.
+function renderAssignmentForm(existing) {
+  const editing = !!existing;
+  const assignment = editing ? existing.assignment : null;
+  editingAssignmentId = editing ? assignment.id : null;
+  removedHandoutIds = [];
+
   const main = document.getElementById("main-content");
   main.innerHTML = `
     <div class="card">
-      <h2>New assignment</h2>
+      ${editing ? '<button class="secondary" id="cancel-edit-btn">← Back</button>' : ""}
+      <h2 style="${editing ? "margin-top:10px" : ""}">${
+        editing ? "Edit assignment" : "New assignment"
+      }</h2>
       <div class="form-row">
         <label>Title</label>
-        <input id="a-title" placeholder="e.g. Loops: FizzBuzz">
+        <input id="a-title" placeholder="e.g. Loops: FizzBuzz" value="${
+          editing ? escapeHtml(assignment.title) : ""
+        }">
       </div>
       <div class="form-row">
         <label>Description / instructions</label>
-        <textarea id="a-desc" rows="4" placeholder="Explain the task..."></textarea>
+        <textarea id="a-desc" rows="4" placeholder="Explain the task...">${
+          editing ? escapeHtml(assignment.description || "") : ""
+        }</textarea>
+      </div>
+      <div class="form-row">
+        <label>Deadline (optional)</label>
+        <input type="datetime-local" id="a-deadline" value="${
+          editing && assignment.deadline
+            ? escapeHtml(String(assignment.deadline).replace(" ", "T"))
+            : ""
+        }">
+        <span class="muted" style="font-size:12px">
+          Students who haven't submitted are flagged in their profile once
+          fewer than two days remain.
+        </span>
       </div>
       <div class="form-row">
         <label>Starter project</label>
@@ -140,8 +173,16 @@ function renderNewAssignmentForm() {
           <textarea id="a-starter" style="font-family: var(--font-mono); flex:1; height:260px; resize:vertical"></textarea>
         </div>
       </div>
+      ${
+        editing
+          ? `<div class="form-row">
+               <label>Current handouts</label>
+               <div id="existing-handouts"></div>
+             </div>`
+          : ""
+      }
       <div class="form-row">
-        <label>Handouts (optional)</label>
+        <label>${editing ? "Add more handouts" : "Handouts (optional)"}</label>
         <input type="file" id="a-files" multiple accept="${ALLOWED_UPLOAD_EXTENSIONS.join(",")}">
         <span class="muted" style="font-size:12px">
           PDF, DOCX and similar documents — up to ${MAX_UPLOAD_MB} MB each,
@@ -149,18 +190,39 @@ function renderNewAssignmentForm() {
         </span>
         <div id="a-files-list"></div>
       </div>
-      <button id="create-assignment-btn">Create assignment</button>
+      <button id="create-assignment-btn">${
+        editing ? "Save changes" : "Create assignment"
+      }</button>
     </div>
   `;
 
   const fileInput = document.getElementById("a-files");
   fileInput.onchange = () => renderChosenFiles(fileInput.files);
 
-  // Start every new assignment from a one-file project.
-  starterFiles = [{ filename: "Main.java", content: DEFAULT_STARTER }];
-  starterActive = "Main.java";
-  starterEntry = "Main.java";
-  document.getElementById("a-starter").value = DEFAULT_STARTER;
+  if (editing) {
+    document.getElementById("cancel-edit-btn").onclick = () => selectAssignment(assignment);
+    existingHandouts = existing.files || [];
+    renderExistingHandouts();
+
+    starterFiles = (existing.starterFiles || []).map((f) => ({
+      filename: f.filename,
+      content: f.content,
+    }));
+    if (starterFiles.length === 0) {
+      starterFiles = [{ filename: "Main.java", content: DEFAULT_STARTER }];
+    }
+    const entryRow = (existing.starterFiles || []).find((f) => f.isEntry);
+    starterEntry = entryRow ? entryRow.filename : starterFiles[0].filename;
+    starterActive = starterEntry;
+  } else {
+    // Start every new assignment from a one-file project.
+    starterFiles = [{ filename: "Main.java", content: DEFAULT_STARTER }];
+    starterEntry = "Main.java";
+    starterActive = "Main.java";
+  }
+
+  document.getElementById("a-starter").value =
+    (starterFiles.find((f) => f.filename === starterActive) || starterFiles[0]).content;
   document.getElementById("a-starter").addEventListener("input", syncStarterTextarea);
   document.getElementById("starter-new-file-btn").onclick = addStarterFile;
   renderStarterTree();
@@ -172,28 +234,72 @@ function renderNewAssignmentForm() {
     if (!title) return alert("Title is required");
 
     const btn = document.getElementById("create-assignment-btn");
+    const label = btn.textContent;
     btn.disabled = true;
-    btn.textContent = "Creating…";
+    btn.textContent = editing ? "Saving…" : "Creating…";
     try {
       const files = await readFilesAsBase64(fileInput.files);
-      const { assignment } = await api("/api/assignments", {
-        method: "POST",
-        body: JSON.stringify({
-          title,
-          description,
-          files,
-          starterFiles,
-          starterEntry,
-        }),
+      const body = JSON.stringify({
+        title,
+        description,
+        files,
+        starterFiles,
+        starterEntry,
+        deadline: document.getElementById("a-deadline").value,
+        removeFileIds: removedHandoutIds,
       });
+
+      const result = editing
+        ? await api(`/api/assignments/${editingAssignmentId}`, { method: "PUT", body })
+        : await api("/api/assignments", { method: "POST", body });
+
       await loadAssignments();
-      selectAssignment(assignment);
+      selectAssignment(result.assignment);
     } catch (err) {
-      alert("Could not create assignment: " + err.message);
+      alert(
+        (editing ? "Could not save the assignment: " : "Could not create assignment: ") +
+          err.message
+      );
       btn.disabled = false;
-      btn.textContent = "Create assignment";
+      btn.textContent = label;
     }
   };
+}
+
+// Handouts already attached to the assignment being edited, with a way to
+// mark them for removal. Nothing is deleted until the form is saved.
+function renderExistingHandouts() {
+  const box = document.getElementById("existing-handouts");
+  if (!box) return;
+  if (existingHandouts.length === 0) {
+    box.innerHTML = '<p class="muted" style="font-size:12px">No handouts attached.</p>';
+    return;
+  }
+  box.innerHTML = "";
+  existingHandouts.forEach((file) => {
+    const marked = removedHandoutIds.includes(file.id);
+    const div = document.createElement("div");
+    div.className = "file-item";
+    div.innerHTML = `
+      <span class="${marked ? "muted" : ""}" style="${
+        marked ? "text-decoration: line-through" : ""
+      }">${escapeHtml(file.originalName)}</span>
+      <span class="muted">${formatSize(file.size)}</span>`;
+    const btn = document.createElement("button");
+    btn.className = "secondary";
+    btn.type = "button";
+    btn.style.padding = "2px 8px";
+    btn.style.fontSize = "12px";
+    btn.textContent = marked ? "Keep" : "Remove";
+    btn.onclick = () => {
+      removedHandoutIds = marked
+        ? removedHandoutIds.filter((id) => id !== file.id)
+        : [...removedHandoutIds, file.id];
+      renderExistingHandouts();
+    };
+    div.appendChild(btn);
+    box.appendChild(div);
+  });
 }
 
 // ---------- Starter project in the new-assignment form ----------
@@ -391,7 +497,18 @@ async function renderOverview() {
     <div class="card">
       <h2>${escapeHtml(activeAssignment.title)}</h2>
       <p class="muted">${escapeHtml(activeAssignment.description || "")}</p>
+      ${
+        activeAssignment.deadline
+          ? `<p class="muted">Deadline: <strong>${escapeHtml(
+              formatDeadline(activeAssignment.deadline)
+            )}</strong></p>`
+          : ""
+      }
       ${renderFileLinks(activeAssignment.id, files)}
+      <div class="toolbar">
+        <button class="secondary" id="edit-assignment-btn">Edit assignment</button>
+        <button class="secondary danger" id="delete-assignment-btn">Delete assignment</button>
+      </div>
     </div>
     <div class="card">
       <h3>Student submissions</h3>
@@ -403,6 +520,9 @@ async function renderOverview() {
       </table>
     </div>
   `;
+  document.getElementById("edit-assignment-btn").onclick = editActiveAssignment;
+  document.getElementById("delete-assignment-btn").onclick = deleteActiveAssignment;
+
   const tbody = document.getElementById("student-rows");
   if (roster.length === 0) {
     tbody.innerHTML = '<tr><td colspan="5" class="muted">No students yet — add some in the sidebar.</td></tr>';
@@ -421,6 +541,54 @@ async function renderOverview() {
     tr.onclick = () => selectStudent(s.studentId, s.displayName);
     tbody.appendChild(tr);
   });
+}
+
+async function editActiveAssignment() {
+  try {
+    // Fetch the full record: the sidebar list doesn't carry starter files.
+    const existing = await api(`/api/assignments/${activeAssignment.id}`);
+    renderAssignmentForm(existing);
+  } catch (err) {
+    alert("Could not open the assignment for editing: " + err.message);
+  }
+}
+
+async function deleteActiveAssignment() {
+  const assignment = activeAssignment;
+  let impact;
+  try {
+    impact = await api(`/api/assignments/${assignment.id}/impact`);
+  } catch (err) {
+    return alert("Could not check what would be deleted: " + err.message);
+  }
+
+  // Spell out what goes with it - this cannot be undone from the UI.
+  const lines = [
+    `Delete "${assignment.title}"?`,
+    "",
+    "This also deletes, for every student:",
+    `  • ${impact.submissions} saved version(s) from ${impact.students} student(s)`,
+    `  • ${impact.grades} grade(s)`,
+    `  • ${impact.messages} discussion message(s)`,
+    "  • the starter project and any handouts",
+    "",
+    "This cannot be undone.",
+  ];
+  if (!confirm(lines.join("\n"))) return;
+
+  try {
+    await api(`/api/assignments/${assignment.id}`, { method: "DELETE" });
+    activeAssignment = null;
+    activeStudent = null;
+    await loadPendingReview();
+    await loadAssignments();
+    document.getElementById("main-content").innerHTML =
+      `<div class="card"><p class="muted">Assignment "${escapeHtml(
+        assignment.title
+      )}" was deleted.</p></div>`;
+  } catch (err) {
+    alert("Could not delete the assignment: " + err.message);
+  }
 }
 
 // ---------- Student review ----------
@@ -762,6 +930,57 @@ async function loadStudentManage() {
   });
 }
 
+// ---------- Deadlines ----------
+
+function formatDeadline(deadline) {
+  const date = new Date(String(deadline).replace(" ", "T"));
+  return Number.isNaN(date.getTime()) ? deadline : date.toLocaleString();
+}
+
+// Wording for how much time is left (or how long it's been overdue).
+function deadlineHint(row) {
+  const hours = row.hoursLeft;
+  if (hours === null || hours === undefined) return "";
+  if (row.deadlineState === "overdue") {
+    const late = Math.abs(hours);
+    return late < 48
+      ? `overdue by ${late} h`
+      : `overdue by ${Math.round(late / 24)} d`;
+  }
+  return hours < 24 ? `${hours} h left` : `${Math.round(hours / 24)} d left`;
+}
+
+function deadlineMark(row) {
+  if (!row.deadlineState) return "";
+  const cls = row.deadlineState === "overdue" ? "deadline-flag overdue" : "deadline-flag";
+  const label = row.deadlineState === "overdue" ? "overdue" : "due soon";
+  return ` <span class="${cls}" title="${escapeHtml(deadlineHint(row))}">${label}</span>`;
+}
+
+// A summary banner above the table, so an at-risk student is obvious without
+// reading every row.
+function renderDeadlineWarnings(rows) {
+  const box = document.getElementById("deadline-warnings");
+  if (!box) return;
+  const flagged = rows.filter((r) => r.deadlineState);
+  if (flagged.length === 0) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = `
+    <div class="warning-banner">
+      <strong>Not handed in yet:</strong>
+      <ul>
+        ${flagged
+          .map(
+            (r) =>
+              `<li>${escapeHtml(r.title)} — ${escapeHtml(formatDeadline(r.deadline))} (${escapeHtml(deadlineHint(r))})</li>`
+          )
+          .join("")}
+      </ul>
+    </div>`;
+}
+
 // ---------- Student profile (all assignments for one student) ----------
 
 async function selectStudentProfile(studentId) {
@@ -783,29 +1002,43 @@ async function selectStudentProfile(studentId) {
         <tr><td class="muted">First name</td><td>${escapeHtml(student.firstName || "—")}</td></tr>
         <tr><td class="muted">Last name</td><td>${escapeHtml(student.lastName || "—")}</td></tr>
         <tr><td class="muted">Study group</td><td>${escapeHtml(student.groupName || "—")}</td></tr>
+        <tr><td class="muted">Email</td><td>${escapeHtml(student.email || "—")}</td></tr>
+        <tr>
+          <td class="muted">Password</td>
+          <td>${
+            student.initialPassword
+              ? `<code>${escapeHtml(student.initialPassword)}</code>
+                 <span class="muted" style="font-size:12px">— the password this account was created with</span>`
+              : '<span class="muted">not recorded</span>'
+          }</td>
+        </tr>
       </table>
     </div>
     <div class="card">
       <h3>Assignments</h3>
+      <div id="deadline-warnings"></div>
       <table>
         <thead>
-          <tr><th>Assignment</th><th>Latest version</th><th>Status</th><th>Last activity</th><th>Grade</th></tr>
+          <tr><th>Assignment</th><th>Deadline</th><th>Latest version</th><th>Status</th><th>Last activity</th><th>Grade</th></tr>
         </thead>
         <tbody id="profile-rows"></tbody>
       </table>
     </div>
   `;
 
+  renderDeadlineWarnings(rows);
+
   const tbody = document.getElementById("profile-rows");
   if (rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" class="muted">No assignments yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">No assignments yet.</td></tr>';
     return;
   }
   rows.forEach((r) => {
     const tr = document.createElement("tr");
     tr.className = "student-row";
     tr.innerHTML = `
-      <td>${escapeHtml(r.title)}${r.archived ? ' <span class="muted">(archived)</span>' : ""}</td>
+      <td>${escapeHtml(r.title)}${r.archived ? ' <span class="muted">(archived)</span>' : ""}${deadlineMark(r)}</td>
+      <td class="muted">${r.deadline ? formatDeadline(r.deadline) : "—"}</td>
       <td>${r.latestVersion ? "v" + r.latestVersion : "—"}</td>
       <td>${r.status ? `<span class="badge ${r.status}">${r.status}</span>` : '<span class="badge">not started</span>'}</td>
       <td class="muted">${r.lastActivity ? new Date(r.lastActivity).toLocaleString() : "—"}</td>

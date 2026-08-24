@@ -22,6 +22,9 @@ pnpm-debug.log*
 # --- Uploaded assignment handouts (teacher's files, not source code) ---
 uploads/
 
+# --- Database backups (npm run backup) - real student data, never commit ---
+backups/
+
 # --- Database ---
 # The SQLite database holds real user accounts, password hashes and student
 # code. It is created automatically on first run - never commit it.

@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "seed": "node scripts/seed.js"
+    "seed": "node scripts/seed.js",
+    "backup": "node scripts/backup-db.js",
+    "reset": "node scripts/clear-classroom-data.js"
   },
   "dependencies": {
     "express": "^4.19.2",

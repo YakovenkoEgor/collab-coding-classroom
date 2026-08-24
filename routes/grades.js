@@ -1,8 +1,49 @@
 const express = require("express");
 const db = require("../db/database");
 const { requireLogin, requireRole } = require("../middleware/auth");
+const { toCsv } = require("../csv");
 
 const router = express.Router();
+
+// Teacher-only: the whole gradebook as CSV - one row per student, one column
+// per assignment, scores where they meet.
+router.get("/export.csv", requireLogin, requireRole("teacher"), (req, res) => {
+  const students = db
+    .prepare(
+      `SELECT id, display_name AS displayName, group_name AS groupName
+       FROM users WHERE role = 'student'
+       ORDER BY group_name IS NULL, group_name, last_name, first_name`
+    )
+    .all();
+
+  const assignments = db
+    .prepare("SELECT id, title FROM assignments ORDER BY created_at")
+    .all();
+
+  const grades = db.prepare("SELECT assignment_id, student_id, score FROM grades").all();
+  const scoreByPair = new Map(
+    grades.map((g) => [`${g.student_id}:${g.assignment_id}`, g.score])
+  );
+
+  const rows = [["Студент", ...assignments.map((a) => a.title)]];
+  for (const student of students) {
+    rows.push([
+      student.displayName,
+      ...assignments.map((a) => {
+        const score = scoreByPair.get(`${student.id}:${a.id}`);
+        return score === undefined || score === null ? "" : score;
+      }),
+    ]);
+  }
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="grades-${stamp}.csv"`
+  );
+  res.send(toCsv(rows));
+});
 
 // Scores are whole numbers from 0 to 15 (or null to clear the grade).
 const MIN_SCORE = 0;

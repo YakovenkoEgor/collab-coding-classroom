@@ -3,6 +3,7 @@ const db = require("../db/database");
 const { requireLogin, requireRole } = require("../middleware/auth");
 const storage = require("../storage");
 const { isValidJavaFilename, SandboxError } = require("../sandbox");
+const { withDeadlineState } = require("../deadlines");
 
 const router = express.Router();
 
@@ -70,17 +71,34 @@ function filesForAssignment(assignmentId) {
     .all(assignmentId);
 }
 
-// List assignments (both roles see the same list; archived hidden by default)
+// List assignments (both roles see the same list; archived hidden by default).
+// For a student each row also carries whether they've handed it in and how the
+// deadline stands, so their sidebar can warn them the same way the teacher's
+// profile view does.
 router.get("/", requireLogin, (req, res) => {
   const includeArchived = req.query.all === "1";
-  const rows = includeArchived
-    ? db.prepare("SELECT * FROM assignments ORDER BY created_at DESC").all()
-    : db
-        .prepare(
-          "SELECT * FROM assignments WHERE archived = 0 ORDER BY created_at DESC"
-        )
-        .all();
-  res.json({ assignments: rows });
+  const where = includeArchived ? "" : "WHERE a.archived = 0";
+
+  if (req.session.user.role !== "student") {
+    const rows = db
+      .prepare(`SELECT a.* FROM assignments a ${where} ORDER BY a.created_at DESC`)
+      .all();
+    return res.json({ assignments: rows });
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT a.*,
+              EXISTS (
+                SELECT 1 FROM submissions s
+                WHERE s.assignment_id = a.id AND s.student_id = ?
+                  AND s.status = 'submitted'
+              ) AS hasSubmitted
+       FROM assignments a ${where} ORDER BY a.created_at DESC`
+    )
+    .all(req.session.user.id);
+
+  res.json({ assignments: rows.map(withDeadlineState) });
 });
 
 // Teacher-only: which submitted work is still waiting to be graded.
@@ -158,11 +176,32 @@ router.get("/:id/files/:fileId/download", requireLogin, (req, res) => {
   });
 });
 
+// The browser sends datetime-local as "YYYY-MM-DDTHH:MM"; store it with a
+// space so it sorts and compares like the other timestamps.
+class DeadlineError extends Error {}
+
+function normalizeDeadline(deadline) {
+  if (typeof deadline !== "string" || deadline.trim() === "") return null;
+  const normalized = deadline.trim().replace("T", " ").slice(0, 16);
+  if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(normalized)) {
+    throw new DeadlineError("Deadline must look like 2026-09-01 18:00");
+  }
+  return normalized;
+}
+
 // Teacher-only: create an assignment, optionally with handout files.
 // files: [{ name, data }] where data is base64 (a data: URL is also accepted).
 router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
-  const { title, description, files } = req.body;
+  const { title, description, files, deadline } = req.body;
   if (!title) return res.status(400).json({ error: "Title required" });
+
+  let dueAt;
+  try {
+    dueAt = normalizeDeadline(deadline);
+  } catch (err) {
+    if (err instanceof DeadlineError) return res.status(400).json({ error: err.message });
+    throw err;
+  }
 
   let starter;
   try {
@@ -188,10 +227,11 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
     const create = db.transaction(() => {
       const info = db
         .prepare(
-          "INSERT INTO assignments (title, description, starter_code, created_by) VALUES (?, ?, ?, ?)"
+          `INSERT INTO assignments (title, description, starter_code, created_by, deadline)
+           VALUES (?, ?, ?, ?, ?)`
         )
         // starter_code mirrors the entry file for the older single-file paths.
-        .run(title, description || "", entryFile.content, req.session.user.id);
+        .run(title, description || "", entryFile.content, req.session.user.id, dueAt);
 
       const insertStarter = db.prepare(
         `INSERT INTO assignment_starter_files (assignment_id, filename, content, is_entry)
@@ -237,6 +277,178 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
     storedFiles.forEach((f) => storage.removeFile(f.storedName));
     throw err;
   }
+});
+
+// Teacher-only: edit an assignment.
+// Replaces the starter project wholesale, adds any newly uploaded handouts and
+// removes the ones listed in removeFileIds. Student work is left untouched.
+router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
+  const assignment = db
+    .prepare("SELECT * FROM assignments WHERE id = ?")
+    .get(req.params.id);
+  if (!assignment) return res.status(404).json({ error: "Not found" });
+
+  const { title, description, files, removeFileIds, deadline } = req.body;
+  const newTitle = (title || "").trim();
+  if (!newTitle) return res.status(400).json({ error: "Title required" });
+
+  let dueAt;
+  let starter;
+  try {
+    dueAt = normalizeDeadline(deadline);
+    starter = readStarterProject(req.body);
+  } catch (err) {
+    if (err instanceof DeadlineError || err instanceof SandboxError) {
+      return res.status(400).json({ error: err.message });
+    }
+    throw err;
+  }
+
+  // Only handouts belonging to this assignment may be removed.
+  const removable = new Set(
+    db
+      .prepare("SELECT id FROM assignment_files WHERE assignment_id = ?")
+      .all(assignment.id)
+      .map((row) => row.id)
+  );
+  const toRemove = (Array.isArray(removeFileIds) ? removeFileIds : [])
+    .map((id) => parseInt(id, 10))
+    .filter((id) => removable.has(id));
+
+  let storedFiles = [];
+  try {
+    storedFiles = storage.storeFiles(files);
+  } catch (err) {
+    if (err instanceof storage.UploadError) {
+      return res.status(400).json({ error: err.message });
+    }
+    throw err;
+  }
+
+  try {
+    const entryFile = starter.files.find((f) => f.filename === starter.entry);
+    const removedNames = toRemove.map(
+      (id) => db.prepare("SELECT stored_name FROM assignment_files WHERE id = ?").get(id)
+    );
+
+    const update = db.transaction(() => {
+      db.prepare(
+        `UPDATE assignments
+         SET title = ?, description = ?, starter_code = ?, deadline = ?
+         WHERE id = ?`
+      ).run(newTitle, description || "", entryFile.content, dueAt, assignment.id);
+
+      db.prepare("DELETE FROM assignment_starter_files WHERE assignment_id = ?").run(
+        assignment.id
+      );
+      const insertStarter = db.prepare(
+        `INSERT INTO assignment_starter_files (assignment_id, filename, content, is_entry)
+         VALUES (?, ?, ?, ?)`
+      );
+      for (const f of starter.files) {
+        insertStarter.run(
+          assignment.id,
+          f.filename,
+          f.content,
+          f.filename === starter.entry ? 1 : 0
+        );
+      }
+
+      const deleteFile = db.prepare("DELETE FROM assignment_files WHERE id = ?");
+      for (const id of toRemove) deleteFile.run(id);
+
+      const insertFile = db.prepare(
+        `INSERT INTO assignment_files
+           (assignment_id, original_name, stored_name, size_bytes, uploaded_by)
+         VALUES (?, ?, ?, ?, ?)`
+      );
+      for (const f of storedFiles) {
+        insertFile.run(
+          assignment.id,
+          f.originalName,
+          f.storedName,
+          f.size,
+          req.session.user.id
+        );
+      }
+    });
+
+    update();
+
+    // Only drop the bytes once the rows are gone for good.
+    for (const row of removedNames) {
+      if (row) storage.removeFile(row.stored_name);
+    }
+
+    res.json({
+      assignment: db.prepare("SELECT * FROM assignments WHERE id = ?").get(assignment.id),
+      files: filesForAssignment(assignment.id),
+      starterFiles: starterFilesFor(assignment.id),
+    });
+  } catch (err) {
+    storedFiles.forEach((f) => storage.removeFile(f.storedName));
+    throw err;
+  }
+});
+
+// Teacher-only: delete an assignment and everything attached to it -
+// student submissions, discussions, grades, starter files and handouts.
+router.delete("/:id", requireLogin, requireRole("teacher"), (req, res) => {
+  const assignment = db
+    .prepare("SELECT * FROM assignments WHERE id = ?")
+    .get(req.params.id);
+  if (!assignment) return res.status(404).json({ error: "Not found" });
+
+  const handouts = db
+    .prepare("SELECT stored_name FROM assignment_files WHERE assignment_id = ?")
+    .all(assignment.id);
+
+  // Children first - foreign keys are enforced.
+  const wipe = db.transaction(() => {
+    db.prepare(
+      `DELETE FROM messages WHERE discussion_id IN
+         (SELECT id FROM discussions WHERE assignment_id = ?)`
+    ).run(assignment.id);
+    db.prepare("DELETE FROM discussions WHERE assignment_id = ?").run(assignment.id);
+    db.prepare(
+      `DELETE FROM submission_files WHERE submission_id IN
+         (SELECT id FROM submissions WHERE assignment_id = ?)`
+    ).run(assignment.id);
+    db.prepare("DELETE FROM submissions WHERE assignment_id = ?").run(assignment.id);
+    db.prepare("DELETE FROM grades WHERE assignment_id = ?").run(assignment.id);
+    db.prepare("DELETE FROM assignment_files WHERE assignment_id = ?").run(assignment.id);
+    db.prepare("DELETE FROM assignment_starter_files WHERE assignment_id = ?").run(
+      assignment.id
+    );
+    db.prepare("DELETE FROM assignments WHERE id = ?").run(assignment.id);
+  });
+
+  wipe();
+  for (const row of handouts) storage.removeFile(row.stored_name);
+
+  res.json({ ok: true });
+});
+
+// Teacher-only: how much work would be lost by deleting this assignment.
+router.get("/:id/impact", requireLogin, requireRole("teacher"), (req, res) => {
+  const id = req.params.id;
+  res.json({
+    submissions: db
+      .prepare("SELECT COUNT(*) c FROM submissions WHERE assignment_id = ?")
+      .get(id).c,
+    students: db
+      .prepare(
+        "SELECT COUNT(DISTINCT student_id) c FROM submissions WHERE assignment_id = ?"
+      )
+      .get(id).c,
+    grades: db.prepare("SELECT COUNT(*) c FROM grades WHERE assignment_id = ?").get(id).c,
+    messages: db
+      .prepare(
+        `SELECT COUNT(*) c FROM messages WHERE discussion_id IN
+           (SELECT id FROM discussions WHERE assignment_id = ?)`
+      )
+      .get(id).c,
+  });
 });
 
 // Teacher-only: archive/unarchive

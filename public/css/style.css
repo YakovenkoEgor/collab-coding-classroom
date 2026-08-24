@@ -447,3 +447,41 @@ h3 { font-size: 14px; margin: 0 0 10px 0; color: var(--text-dim); text-transform
   margin-top: 0;
 }
 .set-entry:hover { background: transparent; border-color: var(--accent); color: var(--accent); }
+
+/* --- Deadline warnings in a student's profile --- */
+.deadline-flag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--warn);
+  color: #241505;
+  cursor: help;
+}
+.deadline-flag.overdue { background: var(--error); color: #2a0f0c; }
+
+.warning-banner {
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.warning-banner ul { margin: 6px 0 0; padding-left: 18px; }
+.warning-banner li { margin-bottom: 2px; }
+
+/* Import results table */
+#import-result table { margin-top: 8px; }
+#import-result h3 { margin: 16px 0 4px; font-size: 14px; }
+#import-result code { font-size: 12.5px; }
+
+/* A deadline that has already passed reads as an error, not a caution */
+.warning-banner.overdue { border-color: var(--error); }
+
+/* Destructive action button */
+button.secondary.danger { color: var(--error); border-color: var(--border); }
+button.secondary.danger:hover { border-color: var(--error); color: var(--error); }

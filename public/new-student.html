@@ -47,6 +47,11 @@
         </div>
 
         <div class="form-row">
+          <label for="s-email">Email</label>
+          <input id="s-email" type="email" autocomplete="off" placeholder="optional">
+        </div>
+
+        <div class="form-row">
           <label for="s-password">Temporary password *</label>
           <input id="s-password" type="text" autocomplete="off" placeholder="at least 6 characters">
           <span class="muted" style="font-size:12px">
@@ -60,6 +65,34 @@
         </div>
 
         <div id="form-message"></div>
+      </div>
+
+      <div class="card">
+        <h2>Import a class from CSV</h2>
+        <p class="muted">
+          One student per line: <code>last name, first name, login, email</code>.
+          Email is optional; a header row is recognised and skipped. Each student
+          gets an 8-character password, shown below after the import and later in
+          their profile.
+        </p>
+
+        <div class="form-row">
+          <label for="i-group">Study group for everyone in this file</label>
+          <input id="i-group" autocomplete="off" placeholder="CS-101">
+        </div>
+
+        <div class="form-row">
+          <label for="i-file">CSV file</label>
+          <input type="file" id="i-file" accept=".csv,text/csv">
+        </div>
+
+        <div class="toolbar">
+          <button id="import-btn" disabled>Import students</button>
+          <a class="back-link" id="sample-link" href="#" style="margin:0">Download a sample file</a>
+        </div>
+
+        <div id="import-message"></div>
+        <div id="import-result"></div>
       </div>
     </div>
   </div>
