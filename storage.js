@@ -36,6 +36,28 @@ const ALLOWED_EXTENSIONS = [
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB per file
 const MAX_FILES_PER_ASSIGNMENT = 10;
 
+// --- Student uploads on free-form assignments ---
+//
+// Students may attach arbitrary files, so this side uses a blocklist rather
+// than a whitelist. Archives are refused because nobody can see what's inside
+// before opening them, and everything executable or script-like is refused
+// because the danger is to whoever downloads it - the teacher. The server
+// itself never opens or runs these files, and stores them under generated
+// names, so they are inert while they sit on disk.
+const BLOCKED_STUDENT_EXTENSIONS = [
+  // archives
+  ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".cab", ".iso", ".dmg",
+  // native executables and installers
+  ".exe", ".msi", ".dll", ".so", ".dylib", ".app", ".apk", ".deb", ".rpm",
+  ".com", ".scr", ".pif", ".jar", ".bin",
+  // scripts and shortcuts
+  ".bat", ".cmd", ".ps1", ".psm1", ".vbs", ".vbe", ".js", ".jse", ".wsf",
+  ".wsh", ".sh", ".reg", ".lnk", ".hta", ".msc", ".chm",
+];
+
+const MAX_STUDENT_FILE_BYTES = 5 * 1024 * 1024; // 5 MB per file
+const MAX_STUDENT_FILES = 3;
+
 function ensureUploadDir() {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
@@ -56,13 +78,30 @@ class UploadError extends Error {}
 // Validates one incoming {name, data} pair and writes it to disk under a
 // generated name. The original name is never used as a path, so a crafted
 // name like "../../server.js" cannot escape the upload folder.
-function storeFile(file) {
+function storeFile(file, policy = {}) {
+  const {
+    allowed = ALLOWED_EXTENSIONS,
+    blocked = null,
+    maxBytes = MAX_FILE_BYTES,
+  } = policy;
+
   const originalName = sanitizeOriginalName(file && file.name);
   const ext = extensionOf(originalName);
 
-  if (!ALLOWED_EXTENSIONS.includes(ext)) {
+  // Handouts use a whitelist; student uploads on free-form assignments are
+  // arbitrary by definition, so they use a blocklist instead.
+  if (blocked) {
+    if (!ext) {
+      throw new UploadError(`"${originalName}": the file needs an extension`);
+    }
+    if (blocked.includes(ext)) {
+      throw new UploadError(
+        `"${originalName}": ${ext} files are not accepted. Archives (zip, rar, …) and programs (exe, bat, …) are blocked — send the documents themselves.`
+      );
+    }
+  } else if (!allowed.includes(ext)) {
     throw new UploadError(
-      `"${originalName}": file type not allowed. Allowed: ${ALLOWED_EXTENSIONS.join(", ")}`
+      `"${originalName}": file type not allowed. Allowed: ${allowed.join(", ")}`
     );
   }
 
@@ -80,9 +119,9 @@ function storeFile(file) {
   if (buffer.length === 0) {
     throw new UploadError(`"${originalName}": file is empty`);
   }
-  if (buffer.length > MAX_FILE_BYTES) {
+  if (buffer.length > maxBytes) {
     throw new UploadError(
-      `"${originalName}" is ${(buffer.length / 1024 / 1024).toFixed(1)} MB - the limit is ${MAX_FILE_BYTES / 1024 / 1024} MB`
+      `"${originalName}" is ${(buffer.length / 1024 / 1024).toFixed(1)} MB - the limit is ${maxBytes / 1024 / 1024} MB`
     );
   }
 
@@ -95,17 +134,16 @@ function storeFile(file) {
 
 // Stores a batch, cleaning up already-written files if a later one fails so
 // we never leave half an upload behind.
-function storeFiles(files) {
+function storeFiles(files, policy = {}) {
   if (!Array.isArray(files) || files.length === 0) return [];
-  if (files.length > MAX_FILES_PER_ASSIGNMENT) {
-    throw new UploadError(
-      `Too many files: ${files.length} (limit is ${MAX_FILES_PER_ASSIGNMENT})`
-    );
+  const maxFiles = policy.maxFiles || MAX_FILES_PER_ASSIGNMENT;
+  if (files.length > maxFiles) {
+    throw new UploadError(`Too many files: ${files.length} (limit is ${maxFiles})`);
   }
 
   const stored = [];
   try {
-    for (const file of files) stored.push(storeFile(file));
+    for (const file of files) stored.push(storeFile(file, policy));
     return stored;
   } catch (err) {
     stored.forEach((s) => removeFile(s.storedName));
@@ -127,13 +165,26 @@ function removeFile(storedName) {
   if (full) fs.rm(full, { force: true }, () => {});
 }
 
+// Student attachments on free-form assignments.
+function storeStudentFiles(files) {
+  return storeFiles(files, {
+    blocked: BLOCKED_STUDENT_EXTENSIONS,
+    maxBytes: MAX_STUDENT_FILE_BYTES,
+    maxFiles: MAX_STUDENT_FILES,
+  });
+}
+
 module.exports = {
   UPLOAD_DIR,
   ALLOWED_EXTENSIONS,
   MAX_FILE_BYTES,
   MAX_FILES_PER_ASSIGNMENT,
+  BLOCKED_STUDENT_EXTENSIONS,
+  MAX_STUDENT_FILE_BYTES,
+  MAX_STUDENT_FILES,
   UploadError,
   storeFiles,
+  storeStudentFiles,
   pathForStoredName,
   removeFile,
 };
