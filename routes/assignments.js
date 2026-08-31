@@ -7,7 +7,30 @@ const { withDeadlineState } = require("../deadlines");
 
 const router = express.Router();
 
+const ASSIGNMENT_TYPES = ["code", "text", "freeform"];
 const MAX_STARTER_FILES = 20;
+
+function normalizeType(type) {
+  const value = (type || "code").trim();
+  if (!ASSIGNMENT_TYPES.includes(value)) {
+    throw new SandboxError(
+      `Unknown assignment type "${value}" (expected one of: ${ASSIGNMENT_TYPES.join(", ")})`
+    );
+  }
+  return value;
+}
+
+// SQL fragment: has this student handed in anything for assignment `a`?
+// Free-form assignments have no versions, so an attached file counts instead.
+// Both placeholders take the student id.
+const HAS_SUBMITTED_SQL = `
+  CASE WHEN a.type = 'freeform'
+    THEN EXISTS (SELECT 1 FROM submission_uploads u
+                 WHERE u.assignment_id = a.id AND u.student_id = ?)
+    ELSE EXISTS (SELECT 1 FROM submissions sub
+                 WHERE sub.assignment_id = a.id AND sub.student_id = ?
+                   AND sub.status = 'submitted')
+  END`;
 const DEFAULT_STARTER =
   "public class Main {\n    public static void main(String[] args) {\n        \n    }\n}\n";
 
@@ -88,15 +111,10 @@ router.get("/", requireLogin, (req, res) => {
 
   const rows = db
     .prepare(
-      `SELECT a.*,
-              EXISTS (
-                SELECT 1 FROM submissions s
-                WHERE s.assignment_id = a.id AND s.student_id = ?
-                  AND s.status = 'submitted'
-              ) AS hasSubmitted
+      `SELECT a.*, ${HAS_SUBMITTED_SQL} AS hasSubmitted
        FROM assignments a ${where} ORDER BY a.created_at DESC`
     )
-    .all(req.session.user.id);
+    .all(req.session.user.id, req.session.user.id);
 
   res.json({ assignments: rows.map(withDeadlineState) });
 });
@@ -110,10 +128,19 @@ router.get("/review/pending", requireLogin, requireRole("teacher"), (req, res) =
   const rows = db
     .prepare(
       `WITH latest_submitted AS (
-         SELECT assignment_id, student_id, MAX(created_at) AS last_submitted
-         FROM submissions
-         WHERE status = 'submitted'
-         GROUP BY assignment_id, student_id
+         -- versioned work (code and text)
+         SELECT s.assignment_id, s.student_id, MAX(s.created_at) AS last_submitted
+         FROM submissions s
+         JOIN assignments a ON a.id = s.assignment_id
+         WHERE s.status = 'submitted' AND a.type <> 'freeform'
+         GROUP BY s.assignment_id, s.student_id
+         UNION ALL
+         -- free-form work: the attached files are the submission
+         SELECT u.assignment_id, u.student_id, MAX(u.created_at)
+         FROM submission_uploads u
+         JOIN assignments a ON a.id = u.assignment_id
+         WHERE a.type = 'freeform'
+         GROUP BY u.assignment_id, u.student_id
        )
        SELECT l.assignment_id AS assignmentId, l.student_id AS studentId
        FROM latest_submitted l
@@ -203,9 +230,13 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
     throw err;
   }
 
-  let starter;
+  let assignmentType;
+  let starter = null;
   try {
-    starter = readStarterProject(req.body);
+    assignmentType = normalizeType(req.body.type);
+    // Only code assignments carry a Java starter project. A text assignment's
+    // starter is the text the student begins from; free-form has none.
+    if (assignmentType === "code") starter = readStarterProject(req.body);
   } catch (err) {
     if (err instanceof SandboxError) return res.status(400).json({ error: err.message });
     throw err;
@@ -222,22 +253,33 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
   }
 
   try {
-    const entryFile = starter.files.find((f) => f.filename === starter.entry);
+    const starterContent = starter
+      ? starter.files.find((f) => f.filename === starter.entry).content
+      : assignmentType === "text"
+        ? String(req.body.starterText || "")
+        : "";
 
     const create = db.transaction(() => {
       const info = db
         .prepare(
-          `INSERT INTO assignments (title, description, starter_code, created_by, deadline)
-           VALUES (?, ?, ?, ?, ?)`
+          `INSERT INTO assignments (title, description, starter_code, created_by, deadline, type)
+           VALUES (?, ?, ?, ?, ?, ?)`
         )
         // starter_code mirrors the entry file for the older single-file paths.
-        .run(title, description || "", entryFile.content, req.session.user.id, dueAt);
+        .run(
+          title,
+          description || "",
+          starterContent,
+          req.session.user.id,
+          dueAt,
+          assignmentType
+        );
 
       const insertStarter = db.prepare(
         `INSERT INTO assignment_starter_files (assignment_id, filename, content, is_entry)
          VALUES (?, ?, ?, ?)`
       );
-      for (const f of starter.files) {
+      for (const f of starter ? starter.files : []) {
         insertStarter.run(
           info.lastInsertRowid,
           f.filename,
@@ -293,15 +335,35 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
   if (!newTitle) return res.status(400).json({ error: "Title required" });
 
   let dueAt;
-  let starter;
+  let starter = null;
+  let assignmentType;
   try {
     dueAt = normalizeDeadline(deadline);
-    starter = readStarterProject(req.body);
+    assignmentType = req.body.type === undefined ? assignment.type : normalizeType(req.body.type);
+    if (assignmentType === "code") starter = readStarterProject(req.body);
   } catch (err) {
     if (err instanceof DeadlineError || err instanceof SandboxError) {
       return res.status(400).json({ error: err.message });
     }
     throw err;
+  }
+
+  // Changing the type would strand whatever the students have already handed
+  // in - versions on one side, attached files on the other.
+  if (assignmentType !== assignment.type) {
+    const existingWork =
+      db
+        .prepare("SELECT COUNT(*) c FROM submissions WHERE assignment_id = ?")
+        .get(assignment.id).c +
+      db
+        .prepare("SELECT COUNT(*) c FROM submission_uploads WHERE assignment_id = ?")
+        .get(assignment.id).c;
+    if (existingWork > 0) {
+      return res.status(409).json({
+        error:
+          "The type can't be changed once students have started working on this assignment",
+      });
+    }
   }
 
   // Only handouts belonging to this assignment may be removed.
@@ -326,7 +388,11 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
   }
 
   try {
-    const entryFile = starter.files.find((f) => f.filename === starter.entry);
+    const starterContent = starter
+      ? starter.files.find((f) => f.filename === starter.entry).content
+      : assignmentType === "text"
+        ? String(req.body.starterText || "")
+        : "";
     const removedNames = toRemove.map(
       (id) => db.prepare("SELECT stored_name FROM assignment_files WHERE id = ?").get(id)
     );
@@ -334,9 +400,9 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
     const update = db.transaction(() => {
       db.prepare(
         `UPDATE assignments
-         SET title = ?, description = ?, starter_code = ?, deadline = ?
+         SET title = ?, description = ?, starter_code = ?, deadline = ?, type = ?
          WHERE id = ?`
-      ).run(newTitle, description || "", entryFile.content, dueAt, assignment.id);
+      ).run(newTitle, description || "", starterContent, dueAt, assignmentType, assignment.id);
 
       db.prepare("DELETE FROM assignment_starter_files WHERE assignment_id = ?").run(
         assignment.id
@@ -345,7 +411,7 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
         `INSERT INTO assignment_starter_files (assignment_id, filename, content, is_entry)
          VALUES (?, ?, ?, ?)`
       );
-      for (const f of starter.files) {
+      for (const f of starter ? starter.files : []) {
         insertStarter.run(
           assignment.id,
           f.filename,
@@ -402,6 +468,9 @@ router.delete("/:id", requireLogin, requireRole("teacher"), (req, res) => {
   const handouts = db
     .prepare("SELECT stored_name FROM assignment_files WHERE assignment_id = ?")
     .all(assignment.id);
+  const studentUploads = db
+    .prepare("SELECT stored_name FROM submission_uploads WHERE assignment_id = ?")
+    .all(assignment.id);
 
   // Children first - foreign keys are enforced.
   const wipe = db.transaction(() => {
@@ -420,11 +489,13 @@ router.delete("/:id", requireLogin, requireRole("teacher"), (req, res) => {
     db.prepare("DELETE FROM assignment_starter_files WHERE assignment_id = ?").run(
       assignment.id
     );
+    db.prepare("DELETE FROM submission_uploads WHERE assignment_id = ?").run(assignment.id);
     db.prepare("DELETE FROM assignments WHERE id = ?").run(assignment.id);
   });
 
   wipe();
   for (const row of handouts) storage.removeFile(row.stored_name);
+  for (const row of studentUploads) storage.removeFile(row.stored_name);
 
   res.json({ ok: true });
 });
@@ -440,6 +511,9 @@ router.get("/:id/impact", requireLogin, requireRole("teacher"), (req, res) => {
       .prepare(
         "SELECT COUNT(DISTINCT student_id) c FROM submissions WHERE assignment_id = ?"
       )
+      .get(id).c,
+    uploads: db
+      .prepare("SELECT COUNT(*) c FROM submission_uploads WHERE assignment_id = ?")
       .get(id).c,
     grades: db.prepare("SELECT COUNT(*) c FROM grades WHERE assignment_id = ?").get(id).c,
     messages: db
@@ -467,12 +541,21 @@ router.get(
   requireLogin,
   requireRole("teacher"),
   (req, res) => {
+    const assignment = db
+      .prepare("SELECT type FROM assignments WHERE id = ?")
+      .get(req.params.id);
+    const isFreeform = assignment && assignment.type === "freeform";
+
     const rows = db
       .prepare(
         `
       SELECT u.id AS studentId, u.display_name AS displayName,
              s.version_number AS latestVersion, s.status, s.created_at AS lastActivity,
-             g.score, g.feedback
+             g.score, g.feedback,
+             (SELECT COUNT(*) FROM submission_uploads up
+              WHERE up.assignment_id = ? AND up.student_id = u.id) AS fileCount,
+             (SELECT MAX(created_at) FROM submission_uploads up
+              WHERE up.assignment_id = ? AND up.student_id = u.id) AS lastUpload
       FROM users u
       LEFT JOIN (
         SELECT * FROM submissions
@@ -486,7 +569,14 @@ router.get(
       ORDER BY u.display_name
     `
       )
-      .all(req.params.id, req.params.id, req.params.id);
+      // fileCount, lastUpload, the two submission sub-queries, and grades
+      .all(
+        req.params.id,
+        req.params.id,
+        req.params.id,
+        req.params.id,
+        req.params.id
+      );
     res.json({ students: rows });
   }
 );

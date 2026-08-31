@@ -156,12 +156,35 @@ router.post(
 
     const nextVersion = (last ? last.version_number : 0) + 1;
 
-    let runResult = { stdout: "", stderr: "", status: "Not run" };
-    try {
-      runResult = await runJavaProject(project.files, project.entry, "");
-    } catch (err) {
-      if (err instanceof SandboxError) return res.status(400).json({ error: err.message });
-      console.error(err);
+    // Only code assignments are compiled and run - a written answer has
+    // nothing to execute, and free-form work never reaches this route.
+    const assignmentType = (
+      db.prepare("SELECT type FROM assignments WHERE id = ?").get(assignmentId) || {}
+    ).type;
+
+    if (assignmentType === "freeform") {
+      return res.status(400).json({
+        error: "This assignment takes attached files, not saved versions",
+      });
+    }
+
+    // A written answer is a single blob; store it under a fixed name so the
+    // rest of the version machinery keeps working unchanged.
+    if (assignmentType === "text") {
+      project = {
+        files: [{ filename: "answer.txt", content: project.files[0].content }],
+        entry: "answer.txt",
+      };
+    }
+
+    let runResult = { stdout: "", stderr: "", status: assignmentType === "text" ? "Saved" : "Not run" };
+    if (assignmentType !== "text") {
+      try {
+        runResult = await runJavaProject(project.files, project.entry, "");
+      } catch (err) {
+        if (err instanceof SandboxError) return res.status(400).json({ error: err.message });
+        console.error(err);
+      }
     }
 
     const entryFile = project.files.find((f) => f.filename === project.entry);

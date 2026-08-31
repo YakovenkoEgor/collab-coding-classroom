@@ -22,6 +22,28 @@ let editorReady = null;
 const MIN_SCORE = 0;
 const MAX_SCORE = 15;
 
+// Assignment kinds, mirrored from routes/assignments.js
+const ASSIGNMENT_TYPES = [
+  { value: "code", label: "Code", hint: "a Java project the student runs" },
+  { value: "text", label: "Text", hint: "a written answer, versioned the same way" },
+  { value: "freeform", label: "Free-form", hint: "the student attaches files" },
+];
+const TYPE_LABEL = {
+  code: "Code",
+  text: "Text",
+  freeform: "Free-form",
+};
+
+// Student attachment limits, mirrored from storage.js
+const MAX_STUDENT_FILES = 3;
+const MAX_STUDENT_MB = 5;
+
+// A small tag showing an assignment's kind.
+function typeBadge(type) {
+  const label = TYPE_LABEL[type] || TYPE_LABEL.code;
+  return `<span class="type-badge type-${type || "code"}">${label}</span>`;
+}
+
 // Upload limits, mirrored from storage.js
 const MAX_UPLOAD_MB = 10;
 const MAX_UPLOAD_FILES = 10;
@@ -100,7 +122,7 @@ async function loadAssignments() {
     const div = document.createElement("div");
     div.className = "assignment-item" + (activeAssignment && activeAssignment.id === a.id ? " active" : "");
     div.innerHTML = `<div class="title">${escapeHtml(a.title)}${reviewBadge(pendingReview.byAssignment[a.id], "assignment")}</div>
-      <div class="meta">${new Date(a.created_at).toLocaleDateString()}</div>`;
+      <div class="meta">${typeBadge(a.type)} ${new Date(a.created_at).toLocaleDateString()}</div>`;
     div.onclick = () => selectAssignment(a);
     container.appendChild(div);
   });
@@ -141,6 +163,22 @@ function renderAssignmentForm(existing) {
         }">
       </div>
       <div class="form-row">
+        <label>Assignment type</label>
+        <select id="a-type" ${editing ? "" : ""}>
+          ${ASSIGNMENT_TYPES.map(
+            (t) =>
+              `<option value="${t.value}"${
+                (editing ? assignment.type : "code") === t.value ? " selected" : ""
+              }>${t.label} — ${t.hint}</option>`
+          ).join("")}
+        </select>
+        ${
+          editing
+            ? '<span class="muted" style="font-size:12px">The type can only be changed while no student has started working.</span>'
+            : ""
+        }
+      </div>
+      <div class="form-row">
         <label>Description / instructions</label>
         <textarea id="a-desc" rows="4" placeholder="Explain the task...">${
           editing ? escapeHtml(assignment.description || "") : ""
@@ -158,7 +196,7 @@ function renderAssignmentForm(existing) {
           fewer than two days remain.
         </span>
       </div>
-      <div class="form-row">
+      <div class="form-row" id="starter-code-row">
         <label>Starter project</label>
         <span class="muted" style="font-size:12px">
           The files a student's editor opens with. The one marked
@@ -172,6 +210,25 @@ function renderAssignmentForm(existing) {
           </div>
           <textarea id="a-starter" style="font-family: var(--font-mono); flex:1; height:260px; resize:vertical"></textarea>
         </div>
+      </div>
+      <div class="form-row" id="starter-text-row" style="display:none">
+        <label>Starting text (optional)</label>
+        <span class="muted" style="font-size:12px">
+          Text the student's answer box opens with — a template or a prompt.
+        </span>
+        <textarea id="a-starter-text" rows="6" style="margin-top:6px">${
+          editing && assignment.type === "text"
+            ? escapeHtml(assignment.starter_code || "")
+            : ""
+        }</textarea>
+      </div>
+      <div class="form-row" id="freeform-note-row" style="display:none">
+        <label>Student submissions</label>
+        <span class="muted" style="font-size:12px">
+          Students attach up to ${MAX_STUDENT_FILES} files, ${MAX_STUDENT_MB} MB each.
+          Archives and programs (zip, rar, exe …) are refused. There is nothing
+          to prepare here.
+        </span>
       </div>
       ${
         editing
@@ -198,6 +255,20 @@ function renderAssignmentForm(existing) {
 
   const fileInput = document.getElementById("a-files");
   fileInput.onchange = () => renderChosenFiles(fileInput.files);
+
+  // Only one of the three starter sections applies at a time.
+  const typeSelect = document.getElementById("a-type");
+  const applyTypeToForm = () => {
+    const type = typeSelect.value;
+    document.getElementById("starter-code-row").style.display =
+      type === "code" ? "" : "none";
+    document.getElementById("starter-text-row").style.display =
+      type === "text" ? "" : "none";
+    document.getElementById("freeform-note-row").style.display =
+      type === "freeform" ? "" : "none";
+  };
+  typeSelect.onchange = applyTypeToForm;
+  applyTypeToForm();
 
   if (editing) {
     document.getElementById("cancel-edit-btn").onclick = () => selectAssignment(assignment);
@@ -242,9 +313,11 @@ function renderAssignmentForm(existing) {
       const body = JSON.stringify({
         title,
         description,
+        type: typeSelect.value,
         files,
         starterFiles,
         starterEntry,
+        starterText: document.getElementById("a-starter-text").value,
         deadline: document.getElementById("a-deadline").value,
         removeFileIds: removedHandoutIds,
       });
@@ -495,7 +568,7 @@ async function renderOverview() {
   const main = document.getElementById("main-content");
   main.innerHTML = `
     <div class="card">
-      <h2>${escapeHtml(activeAssignment.title)}</h2>
+      <h2>${escapeHtml(activeAssignment.title)} ${typeBadge(activeAssignment.type)}</h2>
       <p class="muted">${escapeHtml(activeAssignment.description || "")}</p>
       ${
         activeAssignment.deadline
@@ -528,14 +601,32 @@ async function renderOverview() {
     tbody.innerHTML = '<tr><td colspan="5" class="muted">No students yet — add some in the sidebar.</td></tr>';
     return;
   }
+  const isFreeform = activeAssignment.type === "freeform";
   roster.forEach((s) => {
+    // Free-form work has no versions - what a student has is a set of files.
+    const handedIn = isFreeform ? s.fileCount > 0 : !!s.status;
+    const activity = isFreeform ? s.lastUpload : s.lastActivity;
     const tr = document.createElement("tr");
     tr.className = "student-row";
     tr.innerHTML = `
       <td>${escapeHtml(s.displayName)}</td>
-      <td>${s.latestVersion ? "v" + s.latestVersion : "—"}</td>
-      <td>${s.status ? `<span class="badge ${s.status}">${s.status}</span>` : '<span class="badge">not started</span>'}</td>
-      <td class="muted">${s.lastActivity ? new Date(s.lastActivity).toLocaleString() : "—"}</td>
+      <td>${
+        isFreeform
+          ? s.fileCount
+            ? `${s.fileCount} file${s.fileCount > 1 ? "s" : ""}`
+            : "—"
+          : s.latestVersion
+            ? "v" + s.latestVersion
+            : "—"
+      }</td>
+      <td>${
+        handedIn
+          ? `<span class="badge ${isFreeform ? "submitted" : s.status}">${
+              isFreeform ? "attached" : s.status
+            }</span>`
+          : '<span class="badge">not started</span>'
+      }</td>
+      <td class="muted">${activity ? new Date(activity).toLocaleString() : "—"}</td>
       <td>${s.score !== null && s.score !== undefined ? s.score : "—"}</td>
     `;
     tr.onclick = () => selectStudent(s.studentId, s.displayName);
@@ -597,7 +688,11 @@ async function selectStudent(studentId, displayName) {
   activeStudent = { studentId, displayName };
   activeVersion = null;
   renderStudentPanel();
-  await Promise.all([loadVersions(), loadDiscussion(), loadGrade()]);
+  await Promise.all([
+    activeAssignment.type === "freeform" ? loadStudentUploads() : loadVersions(),
+    loadDiscussion(),
+    loadGrade(),
+  ]);
 }
 
 function renderStudentPanel() {
@@ -608,22 +703,33 @@ function renderStudentPanel() {
       <h2>${escapeHtml(activeStudent.displayName)} — ${escapeHtml(activeAssignment.title)}</h2>
     </div>
 
-    <div class="card">
-      <h3>Version history</h3>
-      <div class="version-list" id="version-list"><p class="muted">Loading…</p></div>
-    </div>
+    ${
+      activeAssignment.type === "freeform"
+        ? `<div class="card">
+             <h3>Attached files</h3>
+             <div id="student-uploads"><p class="muted">Loading…</p></div>
+           </div>`
+        : `<div class="card">
+             <h3>Version history</h3>
+             <div class="version-list" id="version-list"><p class="muted">Loading…</p></div>
+           </div>
 
-    <div class="card">
-      <h3>Code</h3>
-      <div class="editor-layout">
-        <div class="file-tree">
-          <div class="file-tree-header">Project</div>
-          <div id="file-list"><p class="muted" style="font-size:12px">—</p></div>
-        </div>
-        <div class="editor-wrap" id="editor-container"></div>
-      </div>
-      <div class="output-panel" id="output-panel">Select a version to view its output.</div>
-    </div>
+           <div class="card">
+             <h3>${activeAssignment.type === "text" ? "Answer" : "Code"}</h3>
+             ${
+               activeAssignment.type === "text"
+                 ? '<div class="text-view" id="text-view">Select a version to read it.</div>'
+                 : `<div class="editor-layout">
+                      <div class="file-tree">
+                        <div class="file-tree-header">Project</div>
+                        <div id="file-list"><p class="muted" style="font-size:12px">—</p></div>
+                      </div>
+                      <div class="editor-wrap" id="editor-container"></div>
+                    </div>
+                    <div class="output-panel" id="output-panel">Select a version to view its output.</div>`
+             }
+           </div>`
+    }
 
     <div class="card">
       <h3>Grade</h3>
@@ -658,7 +764,35 @@ function renderStudentPanel() {
   document.getElementById("message-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") sendMessage();
   });
-  setupViewer();
+  // Only code assignments need the Monaco viewer.
+  if (activeAssignment.type === "code") setupViewer();
+}
+
+// Free-form work: the student's attachments, downloadable but not editable.
+async function loadStudentUploads() {
+  const box = document.getElementById("student-uploads");
+  if (!box) return;
+  try {
+    const { files } = await api(
+      `/api/uploads/assignment/${activeAssignment.id}?studentId=${activeStudent.studentId}`
+    );
+    if (files.length === 0) {
+      box.innerHTML = '<p class="muted">This student hasn\'t attached anything yet.</p>';
+      return;
+    }
+    box.innerHTML = files
+      .map(
+        (f) => `<div class="file-item">
+            <a href="/api/uploads/${f.id}/download">${escapeHtml(f.originalName)}</a>
+            <span class="muted">${formatSize(f.size)} · ${new Date(
+              f.createdAt
+            ).toLocaleString()}</span>
+          </div>`
+      )
+      .join("");
+  } catch (err) {
+    box.innerHTML = `<p class="muted">Could not load the files: ${escapeHtml(err.message)}</p>`;
+  }
 }
 
 async function setupViewer() {
@@ -700,6 +834,15 @@ async function loadVersions() {
 // Opens a version: loads its files into the read-only tree and shows the
 // entry file first.
 async function openVersion(v) {
+  // A text answer is just read - no editor, no file tree.
+  if (activeAssignment.type === "text") {
+    activeVersion = v;
+    const box = document.getElementById("text-view");
+    if (box) box.textContent = v.code || "(empty)";
+    loadVersions();
+    return;
+  }
+
   await editorReady;
   activeVersion = v;
   try {
