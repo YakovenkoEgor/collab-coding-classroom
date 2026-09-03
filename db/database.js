@@ -62,6 +62,20 @@ CREATE TABLE IF NOT EXISTS assignment_starter_files (
   UNIQUE(assignment_id, filename)
 );
 
+-- Files a student attaches to a free-form assignment. Deliberately not
+-- versioned: the student adds, replaces and removes them at will, within the
+-- limits in storage.js. Code and text assignments use submissions instead.
+CREATE TABLE IF NOT EXISTS submission_uploads (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  assignment_id INTEGER NOT NULL REFERENCES assignments(id),
+  student_id    INTEGER NOT NULL REFERENCES users(id),
+  original_name TEXT NOT NULL,
+  stored_name   TEXT NOT NULL UNIQUE,
+  size_bytes    INTEGER NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(assignment_id, student_id, original_name)
+);
+
 -- Files belonging to one submission version. A version is a snapshot of the
 -- whole project, so every version owns its own full set of rows.
 -- submissions.code still holds the entry file's source, which keeps the older
@@ -192,6 +206,14 @@ if (legacySubmissions.length > 0) {
   console.log(
     `[db] migrated ${legacySubmissions.length} single-file submission(s) to Main.java`
   );
+}
+
+// Assignment kind: 'code' (Java project), 'text' (written answer, versioned
+// the same way) or 'freeform' (arbitrary attached files, not versioned).
+// Everything that existed before multi-type support is a code assignment.
+if (!columnNames("assignments").includes("type")) {
+  db.exec("ALTER TABLE assignments ADD COLUMN type TEXT NOT NULL DEFAULT 'code'");
+  console.log("[db] migrated assignments table: added type");
 }
 
 // Optional due date for an assignment, stored as an ISO-ish

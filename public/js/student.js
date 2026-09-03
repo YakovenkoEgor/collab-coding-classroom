@@ -4,6 +4,7 @@ let activeAssignment = null;
 let versions = [];
 let activeVersion = null; // the version currently loaded into the editor
 let projectFiles = []; // [{ filename, content }] - the project in the editor
+let uploadedFiles = []; // free-form assignments: the student's attachments
 let activeFile = null; // file open in the editor; Run starts from this one
 let editor = null;
 let editorReady = null; // promise
@@ -52,7 +53,7 @@ async function loadAssignments() {
     const div = document.createElement("div");
     div.className = "assignment-item" + (activeAssignment && activeAssignment.id === a.id ? " active" : "");
     div.innerHTML = `<div class="title">${escapeHtml(a.title)}${deadlineMark(a)}</div>
-      <div class="meta">${
+      <div class="meta">${typeBadge(a.type)} ${
         a.deadline
           ? "due " + formatDeadline(a.deadline)
           : new Date(a.created_at).toLocaleDateString()
@@ -66,6 +67,89 @@ function escapeHtml(str) {
   const d = document.createElement("div");
   d.textContent = str;
   return d.innerHTML;
+}
+
+// ---------------------------------------------------------------------
+// Assignment types
+// ---------------------------------------------------------------------
+
+const TYPE_LABEL = { code: "Code", text: "Text", freeform: "Free-form" };
+
+// Student attachment limits, mirrored from storage.js
+const MAX_STUDENT_FILES = 3;
+const MAX_STUDENT_MB = 5;
+const BLOCKED_EXTENSIONS = [
+  ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".cab", ".iso", ".dmg",
+  ".exe", ".msi", ".dll", ".so", ".dylib", ".app", ".apk", ".deb", ".rpm",
+  ".com", ".scr", ".pif", ".jar", ".bin",
+  ".bat", ".cmd", ".ps1", ".psm1", ".vbs", ".vbe", ".js", ".jse", ".wsf",
+  ".wsh", ".sh", ".reg", ".lnk", ".hta", ".msc", ".chm",
+];
+
+function assignmentType() {
+  return (activeAssignment && activeAssignment.type) || "code";
+}
+
+function typeBadge(type) {
+  const label = TYPE_LABEL[type] || TYPE_LABEL.code;
+  return `<span class="type-badge type-${type || "code"}">${label}</span>`;
+}
+
+// Code and text assignments: an editor plus the version history.
+function renderWorkCard() {
+  const isText = assignmentType() === "text";
+  return `
+    <div class="card">
+      <h3>${isText ? "Your answer" : "Code editor"}</h3>
+      ${
+        isText
+          ? '<textarea id="text-editor" class="text-editor" placeholder="Write your answer here…"></textarea>'
+          : `<div class="editor-layout">
+               <div class="file-tree">
+                 <div class="file-tree-header">Project</div>
+                 <div id="file-list"></div>
+                 <button class="secondary" id="new-file-btn">+ New file</button>
+               </div>
+               <div class="editor-wrap" id="editor-container"></div>
+             </div>
+             <div id="entry-hint" class="muted"></div>`
+      }
+      <div id="readonly-banner"></div>
+      <div class="toolbar">
+        ${isText ? "" : '<button id="run-btn">▶ Run</button>'}
+        <button class="secondary" id="save-draft-btn">Save draft</button>
+        <button id="submit-btn">Submit</button>
+      </div>
+      ${
+        isText
+          ? ""
+          : '<div class="output-panel" id="output-panel">Output will appear here.</div>'
+      }
+    </div>
+
+    <div class="card">
+      <h3>Version history</h3>
+      <div class="version-list" id="version-list"><p class="muted">Loading…</p></div>
+    </div>`;
+}
+
+// Free-form assignments: attachments, no versions.
+function renderUploadCard() {
+  return `
+    <div class="card">
+      <h3>Your files</h3>
+      <p class="muted" style="font-size:13px">
+        Attach up to ${MAX_STUDENT_FILES} files, ${MAX_STUDENT_MB} MB each.
+        Uploading a file with a name you already used replaces it.
+        Archives and programs (zip, rar, exe …) are not accepted.
+      </p>
+      <div id="upload-list"><p class="muted">Loading…</p></div>
+      <div class="toolbar">
+        <input type="file" id="upload-input" multiple>
+        <button id="upload-btn" disabled>Attach</button>
+      </div>
+      <div id="upload-message"></div>
+    </div>`;
 }
 
 // ---------------------------------------------------------------------
@@ -130,44 +214,30 @@ async function selectAssignment(assignment) {
   activeVersion = null;
   await loadAssignments(); // re-render sidebar highlight
   await renderMainPanel(); // awaits the editor so loadVersions can fill it
-  await Promise.all([loadVersions(), loadDiscussion(), loadAssignmentFiles()]);
+  await Promise.all([
+    // Free-form work has no versions - its files are loaded by setupUploads().
+    assignmentType() === "freeform" ? Promise.resolve() : loadVersions(),
+    loadDiscussion(),
+    loadAssignmentFiles(),
+  ]);
 }
 
 async function renderMainPanel() {
   const main = document.getElementById("main-content");
   main.innerHTML = `
     <div class="card">
-      <h2>${escapeHtml(activeAssignment.title)}</h2>
+      <h2>${escapeHtml(activeAssignment.title)} ${typeBadge(activeAssignment.type)}</h2>
       <p class="muted">${escapeHtml(activeAssignment.description || "")}</p>
       <div id="deadline-notice">${renderDeadlineNotice(activeAssignment)}</div>
       <div id="assignment-files"></div>
-      <p class="muted" style="font-size:12px">Note: a file's public class must match its file name — <code>Main.java</code> holds <code>public class Main</code>.</p>
+      ${
+        assignmentType() === "code"
+          ? '<p class="muted" style="font-size:12px">Note: a file\'s public class must match its file name — <code>Main.java</code> holds <code>public class Main</code>.</p>'
+          : ""
+      }
     </div>
 
-    <div class="card">
-      <h3>Code editor</h3>
-      <div class="editor-layout">
-        <div class="file-tree">
-          <div class="file-tree-header">Project</div>
-          <div id="file-list"></div>
-          <button class="secondary" id="new-file-btn">+ New file</button>
-        </div>
-        <div class="editor-wrap" id="editor-container"></div>
-      </div>
-      <div id="entry-hint" class="muted"></div>
-      <div id="readonly-banner"></div>
-      <div class="toolbar">
-        <button id="run-btn">▶ Run</button>
-        <button class="secondary" id="save-draft-btn">Save draft</button>
-        <button id="submit-btn">Submit</button>
-      </div>
-      <div class="output-panel" id="output-panel">Output will appear here.</div>
-    </div>
-
-    <div class="card">
-      <h3>Version history</h3>
-      <div class="version-list" id="version-list"><p class="muted">Loading…</p></div>
-    </div>
+    ${assignmentType() === "freeform" ? renderUploadCard() : renderWorkCard()}
 
     <div class="card">
       <h3>Discussion with teacher</h3>
@@ -180,11 +250,21 @@ async function renderMainPanel() {
     </div>
   `;
 
-  await setupEditor();
-  document.getElementById("new-file-btn").onclick = addFile;
-  document.getElementById("run-btn").onclick = runCode;
-  document.getElementById("save-draft-btn").onclick = () => saveVersion("draft");
-  document.getElementById("submit-btn").onclick = () => saveVersion("submitted");
+  const type = assignmentType();
+  if (type === "code") {
+    await setupEditor();
+    document.getElementById("new-file-btn").onclick = addFile;
+    document.getElementById("run-btn").onclick = runCode;
+  } else if (type === "text") {
+    setupTextEditor();
+  } else {
+    setupUploads();
+  }
+
+  if (type !== "freeform") {
+    document.getElementById("save-draft-btn").onclick = () => saveVersion("draft");
+    document.getElementById("submit-btn").onclick = () => saveVersion("submitted");
+  }
   document.getElementById("send-message-btn").onclick = sendMessage;
   document.getElementById("message-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") sendMessage();
@@ -220,6 +300,166 @@ async function setupEditor() {
     minimap: { enabled: false },
   });
   renderFileTree();
+}
+
+// ---------------------------------------------------------------------
+// Text assignments
+// ---------------------------------------------------------------------
+
+// The starter text is whatever the teacher prepared; a saved version wins.
+function setupTextEditor() {
+  const box = document.getElementById("text-editor");
+  if (box) box.value = activeAssignment.starter_code || "";
+}
+
+function textAnswer() {
+  const box = document.getElementById("text-editor");
+  return box ? box.value : "";
+}
+
+// ---------------------------------------------------------------------
+// Free-form assignments: attached files
+// ---------------------------------------------------------------------
+
+function extensionOf(name) {
+  const dot = String(name).lastIndexOf(".");
+  return dot === -1 ? "" : String(name).slice(dot).toLowerCase();
+}
+
+function showUploadMessage(text, kind) {
+  const box = document.getElementById("upload-message");
+  if (!box) return;
+  box.className = text ? (kind === "error" ? "form-message error" : "form-message success") : "";
+  box.textContent = text || "";
+}
+
+function setupUploads() {
+  const input = document.getElementById("upload-input");
+  const button = document.getElementById("upload-btn");
+
+  input.onchange = () => {
+    // Warn about a blocked file before anything is sent to the server.
+    const rejected = Array.from(input.files).filter((f) =>
+      BLOCKED_EXTENSIONS.includes(extensionOf(f.name))
+    );
+    const tooBig = Array.from(input.files).filter(
+      (f) => f.size > MAX_STUDENT_MB * 1024 * 1024
+    );
+
+    if (rejected.length > 0) {
+      showUploadMessage(
+        `Нельзя прикрепить ${rejected
+          .map((f) => f.name)
+          .join(", ")}: архивы и программы (zip, rar, exe и подобные) не принимаются. Приложите сам документ.`,
+        "error"
+      );
+      input.value = "";
+      button.disabled = true;
+      return;
+    }
+    if (tooBig.length > 0) {
+      showUploadMessage(
+        `Слишком большой файл: ${tooBig
+          .map((f) => f.name)
+          .join(", ")}. Максимум ${MAX_STUDENT_MB} МБ.`,
+        "error"
+      );
+      input.value = "";
+      button.disabled = true;
+      return;
+    }
+    if (input.files.length > MAX_STUDENT_FILES) {
+      showUploadMessage(`Можно приложить не больше ${MAX_STUDENT_FILES} файлов.`, "error");
+      input.value = "";
+      button.disabled = true;
+      return;
+    }
+
+    showUploadMessage("", null);
+    button.disabled = input.files.length === 0;
+  };
+
+  button.onclick = uploadFiles;
+  loadUploads();
+}
+
+async function loadUploads() {
+  const box = document.getElementById("upload-list");
+  if (!box) return;
+  try {
+    const { files } = await api(`/api/uploads/assignment/${activeAssignment.id}`);
+    uploadedFiles = files;
+    if (files.length === 0) {
+      box.innerHTML = '<p class="muted">Пока ничего не приложено.</p>';
+      return;
+    }
+    box.innerHTML = "";
+    files.forEach((file) => {
+      const div = document.createElement("div");
+      div.className = "file-item";
+      div.innerHTML = `
+        <a href="/api/uploads/${file.id}/download">${escapeHtml(file.originalName)}</a>
+        <span class="muted">${formatSize(file.size)}</span>`;
+      const del = document.createElement("button");
+      del.className = "secondary";
+      del.style.padding = "2px 8px";
+      del.style.fontSize = "12px";
+      del.textContent = "Удалить";
+      del.onclick = () => deleteUpload(file);
+      div.appendChild(del);
+      box.appendChild(div);
+    });
+  } catch (err) {
+    box.innerHTML = `<p class="muted">Не удалось загрузить список: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+async function uploadFiles() {
+  const input = document.getElementById("upload-input");
+  const button = document.getElementById("upload-btn");
+  const chosen = Array.from(input.files);
+  if (chosen.length === 0) return;
+
+  button.disabled = true;
+  button.textContent = "Загрузка…";
+  try {
+    const files = await Promise.all(
+      chosen.map(
+        (file) =>
+          new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve({ name: file.name, data: reader.result });
+            reader.onerror = () => reject(new Error(`Не удалось прочитать "${file.name}"`));
+            reader.readAsDataURL(file);
+          })
+      )
+    );
+    await api(`/api/uploads/assignment/${activeAssignment.id}`, {
+      method: "POST",
+      body: JSON.stringify({ files }),
+    });
+    input.value = "";
+    showUploadMessage("Файлы приложены.", "success");
+    await loadUploads();
+    await refreshDeadlineState();
+  } catch (err) {
+    showUploadMessage(err.message, "error");
+  } finally {
+    button.disabled = true;
+    button.textContent = "Attach";
+  }
+}
+
+async function deleteUpload(file) {
+  if (!confirm(`Удалить "${file.originalName}"?`)) return;
+  try {
+    await api(`/api/uploads/${file.id}`, { method: "DELETE" });
+    showUploadMessage("", null);
+    await loadUploads();
+    await refreshDeadlineState();
+  } catch (err) {
+    showUploadMessage(err.message, "error");
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -388,6 +628,15 @@ function isEditable() {
 // Loads a version's whole project into the editor and switches edit/read-only
 // mode.
 async function openVersion(v) {
+  // A text answer is a single blob - no editor, no project tree.
+  if (assignmentType() === "text") {
+    activeVersion = v;
+    const box = document.getElementById("text-editor");
+    if (box) box.value = v.code || "";
+    await loadVersions();
+    return;
+  }
+
   await editorReady;
   activeVersion = v;
   try {
@@ -407,8 +656,10 @@ async function openVersion(v) {
 function applyEditMode() {
   const editable = isEditable();
   if (editor) editor.updateOptions({ readOnly: !editable });
+  const textBox = document.getElementById("text-editor");
+  if (textBox) textBox.readOnly = !editable;
   // The tree shows delete buttons only while the project is editable.
-  renderFileTree();
+  if (assignmentType() === "code") renderFileTree();
 
   const saveBtn = document.getElementById("save-draft-btn");
   const submitBtn = document.getElementById("submit-btn");
@@ -436,7 +687,12 @@ async function loadVersions() {
 
   // On first load, start the student off on their latest version rather than
   // the starter code - that's the only version they're allowed to build on.
-  if (!activeVersion && versions.length > 0) {
+  if (!activeVersion && versions.length > 0 && assignmentType() === "text") {
+    const latest = latestVersion();
+    activeVersion = latest;
+    const box = document.getElementById("text-editor");
+    if (box) box.value = latest.code || "";
+  } else if (!activeVersion && versions.length > 0) {
     const latest = latestVersion();
     await editorReady;
     activeVersion = latest;
@@ -508,20 +764,27 @@ async function runCode() {
 }
 
 async function saveVersion(status) {
-  await editorReady;
+  const isText = assignmentType() === "text";
+  if (!isText) await editorReady;
   if (!isEditable()) {
     alert("This is an older version and can't be saved or submitted. Go back to your latest version first.");
     return;
   }
-  syncEditorToFile();
+  if (isText && textAnswer().trim() === "") {
+    alert("Напишите ответ, прежде чем сохранять.");
+    return;
+  }
+  if (!isText) syncEditorToFile();
   const btn = status === "submitted" ? document.getElementById("submit-btn") : document.getElementById("save-draft-btn");
   btn.disabled = true;
   try {
     const { submission } = await api(`/api/submissions/assignment/${activeAssignment.id}`, {
       method: "POST",
       body: JSON.stringify({
-        files: projectFiles,
-        entry: activeFile,
+        // A text answer travels as a single blob; code sends the project.
+        ...(isText
+          ? { code: textAnswer() }
+          : { files: projectFiles, entry: activeFile }),
         status,
         // Tells the server which version this edit is based on; it rejects
         // anything that isn't the latest one.
@@ -529,7 +792,13 @@ async function saveVersion(status) {
       }),
     });
     activeVersion = submission;
-    renderOutput(submission.last_run_stdout, submission.last_run_stderr, submission.last_run_status);
+    if (!isText) {
+      renderOutput(
+        submission.last_run_stdout,
+        submission.last_run_stderr,
+        submission.last_run_status
+      );
+    }
     await loadVersions();
     // Submitting clears the deadline warning, so refresh what depends on it.
     if (status === "submitted") await refreshDeadlineState();

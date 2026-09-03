@@ -485,3 +485,41 @@ h3 { font-size: 14px; margin: 0 0 10px 0; color: var(--text-dim); text-transform
 /* Destructive action button */
 button.secondary.danger { color: var(--error); border-color: var(--border); }
 button.secondary.danger:hover { border-color: var(--error); color: var(--error); }
+
+/* --- Assignment type tag --- */
+.type-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.type-badge.type-code { color: var(--accent); border-color: var(--accent-dim); }
+.type-badge.type-text { color: #8ba7d9; border-color: #4a5b7d; }
+.type-badge.type-freeform { color: var(--warn); border-color: #7d5a44; }
+
+/* --- Text assignments --- */
+.text-editor {
+  width: 100%;
+  min-height: 320px;
+  resize: vertical;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.text-view {
+  background: var(--bg-panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  max-height: 420px;
+  overflow-y: auto;
+}

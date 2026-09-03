@@ -8,6 +8,7 @@ const assignmentRoutes = require("./routes/assignments");
 const submissionRoutes = require("./routes/submissions");
 const discussionRoutes = require("./routes/discussions");
 const gradeRoutes = require("./routes/grades");
+const uploadRoutes = require("./routes/uploads");
 
 const app = express();
 
@@ -31,6 +32,7 @@ app.use("/api/assignments", assignmentRoutes);
 app.use("/api/submissions", submissionRoutes);
 app.use("/api/discussions", discussionRoutes);
 app.use("/api/grades", gradeRoutes);
+app.use("/api/uploads", uploadRoutes);
 
 app.use(express.static(path.join(__dirname, "public")));
 
