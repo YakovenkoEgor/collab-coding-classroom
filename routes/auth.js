@@ -3,7 +3,7 @@ const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const db = require("../db/database");
 const { requireLogin, requireRole } = require("../middleware/auth");
-const { parseCsv } = require("../csv");
+const { parseCsv, toCsv } = require("../csv");
 const { withDeadlineState } = require("../deadlines");
 
 const router = express.Router();
@@ -290,6 +290,41 @@ router.get("/users", requireLogin, requireRole("teacher"), (req, res) => {
     )
     .all();
   res.json({ users });
+});
+
+// Teacher-only: the class roster as CSV, credentials included, for handing
+// out logins. Registered before "/users/:id" so "export.csv" isn't read as an
+// id.
+//
+// This file contains passwords in clear text - the same ones the teacher can
+// already read in a student's profile, since that is the point of storing
+// them (see the note next to PASSWORD_ALPHABET). Treat the download as a
+// sensitive document.
+router.get("/users/export.csv", requireLogin, requireRole("teacher"), (req, res) => {
+  const students = db
+    .prepare(
+      `SELECT first_name AS firstName, last_name AS lastName, username,
+              initial_password AS initialPassword
+       FROM users WHERE role = 'student'
+       ORDER BY group_name IS NULL, group_name, last_name, first_name`
+    )
+    .all();
+
+  const rows = [["Имя", "Фамилия", "Логин", "Пароль"]];
+  for (const s of students) {
+    rows.push([
+      s.firstName || "",
+      s.lastName || "",
+      s.username,
+      // Accounts created before passwords were kept have nothing to show.
+      s.initialPassword || "",
+    ]);
+  }
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="students-${stamp}.csv"`);
+  res.send(toCsv(rows));
 });
 
 // Teacher-only: one student's profile plus their standing in every

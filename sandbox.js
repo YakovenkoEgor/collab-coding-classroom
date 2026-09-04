@@ -220,12 +220,21 @@ async function runJavaProject(files, entryFilename, stdin = "") {
       );
     }
   }
-  const seen = new Set();
+  // Compared case-insensitively on purpose. Linux would happily keep both
+  // Main.java and main.java and then fail deep inside javac, while Windows
+  // silently overwrites one with the other - neither is a useful answer for
+  // the student, so refuse the pair outright.
+  const seen = new Map();
   for (const file of files) {
-    if (seen.has(file.filename)) {
-      throw new SandboxError(`Duplicate file name: ${file.filename}`);
+    const key = file.filename.toLowerCase();
+    if (seen.has(key)) {
+      throw new SandboxError(
+        seen.get(key) === file.filename
+          ? `Duplicate file name: ${file.filename}`
+          : `"${file.filename}" and "${seen.get(key)}" differ only in capitalisation - pick distinct names`
+      );
     }
-    seen.add(file.filename);
+    seen.set(key, file.filename);
   }
 
   const entry = files.find((f) => f.filename === entryFilename);
@@ -243,11 +252,18 @@ async function runProjectInSlot(files, entry, stdin) {
   const outDir = makeTempDir("javasandbox-out-");
 
   try {
+    // The container runs as an unprivileged user (see RUN_AS_USER), which is
+    // nobody on the host either. mkdtemp creates directories as 0700 and the
+    // umask may make files 0600, so without this the container cannot even
+    // enter /code - javac then reports the source as "file not found".
+    fs.chmodSync(codeDir, 0o755);
     for (const file of files) {
-      fs.writeFileSync(path.join(codeDir, file.filename), file.content ?? "", "utf8");
+      const target = path.join(codeDir, file.filename);
+      fs.writeFileSync(target, file.content ?? "", "utf8");
+      fs.chmodSync(target, 0o644);
     }
-    // Make the output dir writable by any container user (openjdk images
-    // often run as root by default, but this keeps it safe either way).
+    // javac writes the .class files here as the container user, so this one
+    // has to be writable by them too.
     fs.chmodSync(outDir, 0o777);
 
     // ---- Step 1: compile ----
