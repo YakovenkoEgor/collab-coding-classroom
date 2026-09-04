@@ -25,6 +25,14 @@
       <div id="student-manage"></div>
       <a class="button-link secondary" href="/new-student.html">+ Add / import students</a>
       <a class="button-link secondary" href="/api/grades/export.csv" download>↓ Export grades (CSV)</a>
+      <a class="button-link secondary" href="/api/auth/users/export.csv" download
+         title="Имя, фамилия, логин и пароль каждого ученика. Файл содержит пароли — храните его как документ с персональными данными.">
+        ↓ Export student logins (CSV)
+      </a>
+      <p class="muted" style="font-size:11px; margin-top:6px">
+        Файл с логинами содержит пароли в открытом виде — он нужен, чтобы раздать
+        их ученикам, но хранить его в общем доступе не стоит.
+      </p>
     </div>
 
     <div class="main" id="main-content">

@@ -64,8 +64,15 @@ function ensureUploadDir() {
 
 // Keeps the name readable in the UI and in the download header, but strips
 // anything that could be interpreted as a path.
+//
+// Both separators are cut by hand rather than left to path.basename: on Linux
+// a backslash is an ordinary filename character, so basename("..\\..\\x.pdf")
+// returns the whole string there while returning just "x.pdf" on Windows. The
+// stored file is named randomly either way, so this is about the name we show
+// and send in the download header, not about path traversal.
 function sanitizeOriginalName(name) {
-  const base = path.basename(String(name || "")).replace(/[\r\n"]/g, "");
+  const text = String(name || "").replace(/[\r\n"]/g, "");
+  const base = text.split(/[/\\]/).pop();
   return base.slice(0, 200) || "file";
 }
 
