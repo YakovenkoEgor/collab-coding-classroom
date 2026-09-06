@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS assignments (
   starter_code TEXT NOT NULL DEFAULT '',
   created_by  INTEGER NOT NULL REFERENCES users(id),
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  archived    INTEGER NOT NULL DEFAULT 0
+  archived    INTEGER NOT NULL DEFAULT 0,
+  max_score   INTEGER NOT NULL DEFAULT 15
 );
 
 -- Every time a student saves/submits, we store a new version row.
@@ -214,6 +215,13 @@ if (legacySubmissions.length > 0) {
 if (!columnNames("assignments").includes("type")) {
   db.exec("ALTER TABLE assignments ADD COLUMN type TEXT NOT NULL DEFAULT 'code'");
   console.log("[db] migrated assignments table: added type");
+}
+
+// Top mark for an assignment. 15 was hard-coded everywhere before this, so
+// that is what existing assignments keep.
+if (!columnNames("assignments").includes("max_score")) {
+  db.exec("ALTER TABLE assignments ADD COLUMN max_score INTEGER NOT NULL DEFAULT 15");
+  console.log("[db] migrated assignments table: added max_score");
 }
 
 // Optional due date for an assignment, stored as an ISO-ish

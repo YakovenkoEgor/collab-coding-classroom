@@ -18,9 +18,19 @@ let viewerFile = null; // which of them is shown in the editor
 let viewerEditor = null;
 let editorReady = null;
 
-// Grading scale: whole numbers 0-15 (mirrored by validation in routes/grades.js)
+// Grading scale: whole numbers from 0 up to the assignment's own maximum,
+// which the teacher sets when creating it (mirrored in routes/assignments.js
+// and routes/grades.js).
 const MIN_SCORE = 0;
-const MAX_SCORE = 15;
+const MIN_MAX_SCORE = 1;
+const MAX_MAX_SCORE = 100;
+const DEFAULT_MAX_SCORE = 15;
+
+// Top mark of the assignment currently open for review.
+function currentMaxScore() {
+  const value = activeAssignment && activeAssignment.max_score;
+  return Number.isInteger(value) && value > 0 ? value : DEFAULT_MAX_SCORE;
+}
 
 // Assignment kinds, mirrored from routes/assignments.js
 const ASSIGNMENT_TYPES = [
@@ -185,6 +195,15 @@ function renderAssignmentForm(existing) {
         }</textarea>
       </div>
       <div class="form-row">
+        <label>Maximum score</label>
+        <input type="number" id="a-max-score" min="${MIN_MAX_SCORE}" max="${MAX_MAX_SCORE}" step="1"
+               value="${editing ? assignment.max_score : DEFAULT_MAX_SCORE}">
+        <span class="muted" style="font-size:12px">
+          Whole number from ${MIN_MAX_SCORE} to ${MAX_MAX_SCORE}. The grade box
+          for this assignment counts up to it.
+        </span>
+      </div>
+      <div class="form-row">
         <label>Deadline (optional)</label>
         <input type="datetime-local" id="a-deadline" value="${
           editing && assignment.deadline
@@ -314,6 +333,7 @@ function renderAssignmentForm(existing) {
         title,
         description,
         type: typeSelect.value,
+        maxScore: Number(document.getElementById("a-max-score").value),
         files,
         starterFiles,
         starterEntry,
@@ -627,7 +647,11 @@ async function renderOverview() {
           : '<span class="badge">not started</span>'
       }</td>
       <td class="muted">${activity ? new Date(activity).toLocaleString() : "—"}</td>
-      <td>${s.score !== null && s.score !== undefined ? s.score : "—"}</td>
+      <td>${
+        s.score !== null && s.score !== undefined
+          ? `${s.score} / ${currentMaxScore()}`
+          : "—"
+      }</td>
     `;
     tr.onclick = () => selectStudent(s.studentId, s.displayName);
     tbody.appendChild(tr);
@@ -734,11 +758,11 @@ function renderStudentPanel() {
     <div class="card">
       <h3>Grade</h3>
       <div class="grade-box">
-        <label class="muted">Score (0–${MAX_SCORE}):</label>
+        <label class="muted">Score (0–${currentMaxScore()}):</label>
         <!-- No min/max on purpose: they would stop the stepper dead at the
              bounds, and we want it to wrap around instead. The range is
              enforced in wrapScore(), in saveGrade() and on the server. -->
-        <input type="number" id="grade-score" step="1" value="${MAX_SCORE}">
+        <input type="number" id="grade-score" step="1" value="${currentMaxScore()}">
         <button id="save-grade-btn">Save grade</button>
       </div>
     </div>
@@ -910,19 +934,20 @@ function renderOutput(stdout, stderr, status) {
 // ---------- Grading ----------
 
 // Makes the score wrap around instead of stopping at the ends: stepping up
-// from 15 gives 0, stepping down from 0 gives 15. Anything further out of
-// range (typed by hand) is clamped rather than wrapped, so typing "99"
-// doesn't silently become 3.
+// from the maximum gives 0, stepping down from 0 gives the maximum. Anything
+// further out of range (typed by hand) is clamped rather than wrapped, so
+// typing "99" doesn't silently become something else.
 function wrapScore(input) {
   const raw = input.value.trim();
   if (raw === "") return; // empty means "no grade" - leave it alone
   const value = Number(raw);
   if (!Number.isInteger(value)) return;
 
-  if (value > MAX_SCORE) {
-    input.value = value === MAX_SCORE + 1 ? MIN_SCORE : MAX_SCORE;
+  const max = currentMaxScore();
+  if (value > max) {
+    input.value = value === max + 1 ? MIN_SCORE : max;
   } else if (value < MIN_SCORE) {
-    input.value = value === MIN_SCORE - 1 ? MAX_SCORE : MIN_SCORE;
+    input.value = value === MIN_SCORE - 1 ? max : MIN_SCORE;
   }
 }
 
@@ -936,7 +961,7 @@ async function loadGrade() {
   scoreInput.value =
     grade && grade.score !== null && grade.score !== undefined
       ? grade.score
-      : MAX_SCORE;
+      : currentMaxScore();
 }
 
 async function saveGrade() {
@@ -944,8 +969,9 @@ async function saveGrade() {
   let score = null;
   if (raw !== "") {
     score = Number(raw);
-    if (!Number.isInteger(score) || score < MIN_SCORE || score > MAX_SCORE) {
-      alert(`Score must be a whole number between ${MIN_SCORE} and ${MAX_SCORE}.`);
+    const max = currentMaxScore();
+    if (!Number.isInteger(score) || score < MIN_SCORE || score > max) {
+      alert(`Score must be a whole number between ${MIN_SCORE} and ${max}.`);
       return;
     }
   }
@@ -1185,7 +1211,11 @@ async function selectStudentProfile(studentId) {
       <td>${r.latestVersion ? "v" + r.latestVersion : "—"}</td>
       <td>${r.status ? `<span class="badge ${r.status}">${r.status}</span>` : '<span class="badge">not started</span>'}</td>
       <td class="muted">${r.lastActivity ? new Date(r.lastActivity).toLocaleString() : "—"}</td>
-      <td>${r.score !== null && r.score !== undefined ? r.score : "—"}</td>
+      <td>${
+        r.score !== null && r.score !== undefined
+          ? `${r.score} / ${r.maxScore ?? DEFAULT_MAX_SCORE}`
+          : "—"
+      }</td>
     `;
     // Jump straight to reviewing this student's work on that assignment.
     tr.onclick = async () => {

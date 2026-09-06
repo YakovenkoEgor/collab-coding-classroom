@@ -207,6 +207,24 @@ router.get("/:id/files/:fileId/download", requireLogin, (req, res) => {
 // space so it sorts and compares like the other timestamps.
 class DeadlineError extends Error {}
 
+// The top mark a teacher can award for this assignment. Kept a whole number:
+// the grade box steps through integers, and half-points would make the
+// wrap-around behaviour and the gradebook export messy.
+const MIN_MAX_SCORE = 1;
+const MAX_MAX_SCORE = 100;
+const DEFAULT_MAX_SCORE = 15;
+
+function normalizeMaxScore(raw) {
+  if (raw === undefined || raw === null || raw === "") return DEFAULT_MAX_SCORE;
+  const value = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isInteger(value) || value < MIN_MAX_SCORE || value > MAX_MAX_SCORE) {
+    throw new SandboxError(
+      `Maximum score must be a whole number between ${MIN_MAX_SCORE} and ${MAX_MAX_SCORE}`
+    );
+  }
+  return value;
+}
+
 function normalizeDeadline(deadline) {
   if (typeof deadline !== "string" || deadline.trim() === "") return null;
   const normalized = deadline.trim().replace("T", " ").slice(0, 16);
@@ -231,9 +249,11 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
   }
 
   let assignmentType;
+  let maxScore;
   let starter = null;
   try {
     assignmentType = normalizeType(req.body.type);
+    maxScore = normalizeMaxScore(req.body.maxScore);
     // Only code assignments carry a Java starter project. A text assignment's
     // starter is the text the student begins from; free-form has none.
     if (assignmentType === "code") starter = readStarterProject(req.body);
@@ -262,8 +282,9 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
     const create = db.transaction(() => {
       const info = db
         .prepare(
-          `INSERT INTO assignments (title, description, starter_code, created_by, deadline, type)
-           VALUES (?, ?, ?, ?, ?, ?)`
+          `INSERT INTO assignments
+             (title, description, starter_code, created_by, deadline, type, max_score)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
         )
         // starter_code mirrors the entry file for the older single-file paths.
         .run(
@@ -272,7 +293,8 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
           starterContent,
           req.session.user.id,
           dueAt,
-          assignmentType
+          assignmentType,
+          maxScore
         );
 
       const insertStarter = db.prepare(
@@ -337,15 +359,36 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
   let dueAt;
   let starter = null;
   let assignmentType;
+  let maxScore;
   try {
     dueAt = normalizeDeadline(deadline);
     assignmentType = req.body.type === undefined ? assignment.type : normalizeType(req.body.type);
+    maxScore =
+      req.body.maxScore === undefined
+        ? assignment.max_score
+        : normalizeMaxScore(req.body.maxScore);
     if (assignmentType === "code") starter = readStarterProject(req.body);
   } catch (err) {
     if (err instanceof DeadlineError || err instanceof SandboxError) {
       return res.status(400).json({ error: err.message });
     }
     throw err;
+  }
+
+  // Lowering the top mark below marks already given would leave grades that
+  // the grade box itself would refuse to accept. Say so instead of silently
+  // creating that state.
+  if (maxScore < assignment.max_score) {
+    const above = db
+      .prepare(
+        "SELECT COUNT(*) c FROM grades WHERE assignment_id = ? AND score > ?"
+      )
+      .get(assignment.id, maxScore).c;
+    if (above > 0) {
+      return res.status(409).json({
+        error: `${above} student(s) already have a grade above ${maxScore}. Lower those grades first, or keep the maximum at ${assignment.max_score}.`,
+      });
+    }
   }
 
   // Changing the type would strand whatever the students have already handed
@@ -400,9 +443,18 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
     const update = db.transaction(() => {
       db.prepare(
         `UPDATE assignments
-         SET title = ?, description = ?, starter_code = ?, deadline = ?, type = ?
+         SET title = ?, description = ?, starter_code = ?, deadline = ?, type = ?,
+             max_score = ?
          WHERE id = ?`
-      ).run(newTitle, description || "", starterContent, dueAt, assignmentType, assignment.id);
+      ).run(
+        newTitle,
+        description || "",
+        starterContent,
+        dueAt,
+        assignmentType,
+        maxScore,
+        assignment.id
+      );
 
       db.prepare("DELETE FROM assignment_starter_files WHERE assignment_id = ?").run(
         assignment.id
