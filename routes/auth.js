@@ -344,6 +344,7 @@ router.get("/users/:id", requireLogin, requireRole("teacher"), (req, res) => {
   const assignments = db
     .prepare(
       `SELECT a.id AS assignmentId, a.title, a.archived, a.deadline,
+              a.max_score AS maxScore,
               s.version_number AS latestVersion, s.status,
               s.created_at AS lastActivity,
               g.score, g.feedback,

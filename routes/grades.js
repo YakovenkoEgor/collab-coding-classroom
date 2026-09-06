@@ -17,7 +17,7 @@ router.get("/export.csv", requireLogin, requireRole("teacher"), (req, res) => {
     .all();
 
   const assignments = db
-    .prepare("SELECT id, title FROM assignments ORDER BY created_at")
+    .prepare("SELECT id, title, max_score AS maxScore FROM assignments ORDER BY created_at")
     .all();
 
   const grades = db.prepare("SELECT assignment_id, student_id, score FROM grades").all();
@@ -25,7 +25,11 @@ router.get("/export.csv", requireLogin, requireRole("teacher"), (req, res) => {
     grades.map((g) => [`${g.student_id}:${g.assignment_id}`, g.score])
   );
 
-  const rows = [["Студент", ...assignments.map((a) => a.title)]];
+  // The top mark now differs per assignment, so a bare number in a cell would
+  // be ambiguous - the column header carries it.
+  const rows = [
+    ["Студент", ...assignments.map((a) => `${a.title} (макс. ${a.maxScore})`)],
+  ];
   for (const student of students) {
     rows.push([
       student.displayName,
@@ -45,16 +49,16 @@ router.get("/export.csv", requireLogin, requireRole("teacher"), (req, res) => {
   res.send(toCsv(rows));
 });
 
-// Scores are whole numbers from 0 to 15 (or null to clear the grade).
+// Scores are whole numbers from 0 up to the assignment's own maximum
+// (or null to clear the grade).
 const MIN_SCORE = 0;
-const MAX_SCORE = 15;
 
-function normalizeScore(raw) {
+function normalizeScore(raw, maxScore) {
   if (raw === undefined || raw === null || raw === "") return { value: null };
   const value = typeof raw === "number" ? raw : Number(raw);
-  if (!Number.isInteger(value) || value < MIN_SCORE || value > MAX_SCORE) {
+  if (!Number.isInteger(value) || value < MIN_SCORE || value > maxScore) {
     return {
-      error: `Score must be a whole number between ${MIN_SCORE} and ${MAX_SCORE}`,
+      error: `Score must be a whole number between ${MIN_SCORE} and ${maxScore}`,
     };
   }
   return { value };
@@ -83,7 +87,12 @@ router.put(
     const { studentId, score, feedback } = req.body;
     if (!studentId) return res.status(400).json({ error: "studentId required" });
 
-    const normalized = normalizeScore(score);
+    const assignment = db
+      .prepare("SELECT max_score FROM assignments WHERE id = ?")
+      .get(req.params.assignmentId);
+    if (!assignment) return res.status(404).json({ error: "Assignment not found" });
+
+    const normalized = normalizeScore(score, assignment.max_score);
     if (normalized.error) return res.status(400).json({ error: normalized.error });
 
     db.prepare(
