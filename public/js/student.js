@@ -5,6 +5,9 @@ let versions = [];
 let activeVersion = null; // the version currently loaded into the editor
 let projectFiles = []; // [{ filename, content }] - the project in the editor
 let uploadedFiles = []; // free-form assignments: the student's attachments
+let runStream = null; // EventSource carrying a running program's output
+let runSessionId = null; // id of that program, while it lives
+let typedThisRun = []; // lines the student typed into the console this run
 let activeFile = null; // file open in the editor; Run starts from this one
 let editor = null;
 let editorReady = null; // promise
@@ -117,13 +120,19 @@ function renderWorkCard() {
       <div id="readonly-banner"></div>
       <div class="toolbar">
         ${isText ? "" : '<button id="run-btn">▶ Run</button>'}
+        ${isText ? "" : '<button class="secondary" id="console-stop" hidden>■ Стоп</button>'}
         <button class="secondary" id="save-draft-btn">Save draft</button>
         <button id="submit-btn">Submit</button>
       </div>
       ${
         isText
           ? ""
-          : '<div class="output-panel" id="output-panel">Output will appear here.</div>'
+          : // One console for everything: program output, errors and what the
+            // student types, in the order it happened - the input line lives
+            // inside the panel so the caret sits right after the prompt.
+            `<div class="output-panel terminal" id="output-panel"><span id="terminal-text">Здесь появится вывод программы.</span><input
+                 id="console-line" class="terminal-input" autocomplete="off"
+                 spellcheck="false" hidden></div>`
       }
     </div>
 
@@ -209,6 +218,9 @@ function renderDeadlineNotice(assignment) {
 }
 
 async function selectAssignment(assignment) {
+  // Leaving the assignment abandons whatever was running on it.
+  stopRun();
+  closeRunStream();
   activeAssignment = assignment;
   selectedVersionForMessage = null;
   activeVersion = null;
@@ -255,6 +267,21 @@ async function renderMainPanel() {
     await setupEditor();
     document.getElementById("new-file-btn").onclick = addFile;
     document.getElementById("run-btn").onclick = runCode;
+
+    const line = document.getElementById("console-line");
+    const submitLine = () => {
+      sendConsoleLine(line.value);
+      line.value = "";
+    };
+    document.getElementById("console-stop").onclick = stopRun;
+    line.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submitLine();
+    });
+    // Clicking anywhere in the console puts the caret back on the input,
+    // the way a terminal behaves.
+    document.getElementById("output-panel").addEventListener("click", () => {
+      if (!line.hidden && !window.getSelection().toString()) line.focus();
+    });
   } else if (type === "text") {
     setupTextEditor();
   } else {
@@ -315,6 +342,17 @@ function setupTextEditor() {
 function textAnswer() {
   const box = document.getElementById("text-editor");
   return box ? box.value : "";
+}
+
+// ---------------------------------------------------------------------
+// Console input (what java.util.Scanner reads)
+// ---------------------------------------------------------------------
+
+// Everything the student typed into the console during the current run. The
+// submitted version is replayed against exactly this, so the result the
+// teacher sees matches what the student saw.
+function consoleInput() {
+  return typedThisRun.length > 0 ? typedThisRun.join("\n") + "\n" : "";
 }
 
 // ---------------------------------------------------------------------
@@ -727,39 +765,156 @@ async function loadVersions() {
   });
 }
 
+// Shows the recorded result of a saved version, or a compile error.
+//
+// Writes into the transcript span rather than replacing the panel: the live
+// console's input field lives inside this same panel, and clearing its
+// innerHTML would delete it - leaving a run with nowhere to print and nowhere
+// to type.
 function renderOutput(stdout, stderr, status) {
   const panel = document.getElementById("output-panel");
-  if (!panel) return;
+  const target = document.getElementById("terminal-text");
+  if (!panel || !target) return;
+
   const hasError = stderr && stderr.trim().length > 0;
-  panel.className = "output-panel" + (hasError ? " error" : "");
-  panel.innerHTML = "";
+  panel.className = "output-panel terminal" + (hasError ? " error" : "");
+
+  target.textContent = "";
   const statusLine = document.createElement("div");
   statusLine.className = "status-line";
   statusLine.textContent = `Status: ${status || "—"}`;
-  panel.appendChild(statusLine);
-  const pre = document.createElement("div");
-  pre.textContent = (stdout || "") + (stderr ? "\n" + stderr : "") || "(no output)";
-  panel.appendChild(pre);
+  target.appendChild(statusLine);
+  const body = document.createElement("div");
+  body.textContent = (stdout || "") + (stderr ? "\n" + stderr : "") || "(no output)";
+  target.appendChild(body);
+}
+
+// ---------------------------------------------------------------------
+// Running the program interactively
+//
+// The program stays alive while it runs: output appears as it is printed and
+// the student types values when the program asks for them, exactly like a
+// console. Anything in the "prepared input" box is sent the moment it starts.
+// ---------------------------------------------------------------------
+
+// Appends a chunk to the console transcript, keeping it scrolled to the end.
+function appendConsole(type, text) {
+  const panel = document.getElementById("output-panel");
+  const target = document.getElementById("terminal-text");
+  if (!panel || !target) return;
+  const span = document.createElement("span");
+  span.className = `console-${type}`;
+  span.textContent = text;
+  target.appendChild(span);
+  panel.scrollTop = panel.scrollHeight;
+}
+
+function setConsoleRunning(running) {
+  const line = document.getElementById("console-line");
+  const stop = document.getElementById("console-stop");
+  const btn = document.getElementById("run-btn");
+  if (line) {
+    line.hidden = !running;
+    if (running) {
+      line.value = "";
+      line.focus();
+    }
+  }
+  if (stop) stop.hidden = !running;
+  if (btn) {
+    btn.disabled = running;
+    btn.textContent = running ? "Running…" : "▶ Run";
+  }
+}
+
+function closeRunStream() {
+  if (runStream) {
+    runStream.close();
+    runStream = null;
+  }
+  runSessionId = null;
 }
 
 async function runCode() {
   await editorReady;
   syncEditorToFile();
-  const btn = document.getElementById("run-btn");
-  btn.disabled = true;
-  btn.textContent = "Running…";
+  closeRunStream();
+
+  const panel = document.getElementById("output-panel");
+  const target = document.getElementById("terminal-text");
+  if (panel) panel.className = "output-panel terminal";
+  if (target) target.textContent = "";
+  // Everything typed during this run becomes the input the submitted version
+  // is replayed with, so the teacher sees the same result.
+  typedThisRun = [];
+  setConsoleRunning(true);
+
+  let started;
   try {
-    const result = await api("/api/submissions/run", {
+    started = await api("/api/submissions/interactive", {
       method: "POST",
       // Every file is compiled; the open one is the entry point.
       body: JSON.stringify({ files: projectFiles, entry: activeFile }),
     });
-    renderOutput(result.stdout, result.stderr || result.compileOutput, result.status);
   } catch (err) {
+    setConsoleRunning(false);
     renderOutput("", err.message, "Error");
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "▶ Run";
+    return;
+  }
+
+  // A program that doesn't compile never starts - show the errors as before.
+  if (started.compileFailed) {
+    setConsoleRunning(false);
+    const r = started.result;
+    renderOutput(r.stdout, r.stderr || r.compileOutput, r.status);
+    return;
+  }
+
+  runSessionId = started.sessionId;
+  runStream = new EventSource(`/api/submissions/interactive/${runSessionId}/stream`);
+
+  runStream.onmessage = (event) => {
+    const chunk = JSON.parse(event.data);
+    if (chunk.type === "exit") {
+      appendConsole("status", `\n— ${chunk.text}\n`);
+      closeRunStream();
+      setConsoleRunning(false);
+      return;
+    }
+    appendConsole("output", chunk.text);
+  };
+
+  runStream.onerror = () => {
+    // The stream ends on its own when the program exits; anything else means
+    // the connection dropped.
+    if (runSessionId) {
+      appendConsole("status", "\n— Соединение с программой потеряно.\n");
+      closeRunStream();
+      setConsoleRunning(false);
+    }
+  };
+
+}
+
+async function sendConsoleLine(text) {
+  if (!runSessionId) return;
+  typedThisRun.push(text);
+  try {
+    await api(`/api/submissions/interactive/${runSessionId}/input`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+  } catch (err) {
+    appendConsole("status", `\n— ${err.message}\n`);
+  }
+}
+
+async function stopRun() {
+  if (!runSessionId) return;
+  try {
+    await api(`/api/submissions/interactive/${runSessionId}/stop`, { method: "POST" });
+  } catch {
+    // The run may have finished on its own between click and request.
   }
 }
 
@@ -781,10 +936,11 @@ async function saveVersion(status) {
     const { submission } = await api(`/api/submissions/assignment/${activeAssignment.id}`, {
       method: "POST",
       body: JSON.stringify({
-        // A text answer travels as a single blob; code sends the project.
+        // A text answer travels as a single blob; code sends the project
+        // together with the console input it should be run against.
         ...(isText
           ? { code: textAnswer() }
-          : { files: projectFiles, entry: activeFile }),
+          : { files: projectFiles, entry: activeFile, stdin: consoleInput() }),
         status,
         // Tells the server which version this edit is based on; it rejects
         // anything that isn't the latest one.

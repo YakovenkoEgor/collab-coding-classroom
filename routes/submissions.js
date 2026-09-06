@@ -1,7 +1,12 @@
 const express = require("express");
 const db = require("../db/database");
 const { requireLogin, requireRole } = require("../middleware/auth");
-const { runJavaProject, SandboxError, QueueFullError } = require("../sandbox");
+const {
+  runJavaProject,
+  startInteractiveRun,
+  SandboxError,
+  QueueFullError,
+} = require("../sandbox");
 
 const router = express.Router();
 
@@ -64,6 +69,119 @@ router.get("/assignment/:assignmentId", requireLogin, (req, res) => {
     )
     .all(req.params.assignmentId, studentId);
   res.json({ submissions: rows });
+});
+
+// ---------------------------------------------------------------------
+// Interactive runs
+//
+// Three endpoints per session: start it, listen to its output, feed it a
+// line. Output travels over Server-Sent Events - a plain HTTP stream the
+// browser understands natively, so no WebSocket library is needed.
+// ---------------------------------------------------------------------
+
+const liveSessions = new Map(); // id -> { session, ownerId, buffer }
+
+function ownedSession(req) {
+  const entry = liveSessions.get(req.params.sessionId);
+  if (!entry) return null;
+  return entry.ownerId === req.session.user.id ? entry : null;
+}
+
+router.post("/interactive", requireLogin, requireRole("student"), async (req, res) => {
+  let project;
+  try {
+    project = readProject(req.body);
+  } catch (err) {
+    if (err instanceof SandboxError) return res.status(400).json({ error: err.message });
+    throw err;
+  }
+
+  // One live program per student: a second Run replaces the first rather than
+  // quietly leaving it holding a container.
+  for (const [id, entry] of liveSessions) {
+    if (entry.ownerId === req.session.user.id) {
+      entry.session.stop();
+      liveSessions.delete(id);
+    }
+  }
+
+  try {
+    const started = await startInteractiveRun(project.files, project.entry);
+    if (!started.ok) return res.json({ compileFailed: true, result: started.result });
+
+    const { session } = started;
+    // Output that arrives before the browser opens the stream is kept here.
+    const entry = { session, ownerId: req.session.user.id, buffer: [] };
+    liveSessions.set(session.id, entry);
+
+    session.on("output", (text) => entry.buffer.push({ type: "output", text }));
+    session.on("exit", ({ reason }) => {
+      entry.buffer.push({ type: "exit", text: reason });
+      // Give a late-connecting client a moment to read the tail.
+      setTimeout(() => liveSessions.delete(session.id), 60_000);
+    });
+
+    res.json({ sessionId: session.id });
+  } catch (err) {
+    if (err instanceof SandboxError) return res.status(400).json({ error: err.message });
+    if (err instanceof QueueFullError) return res.status(503).json({ error: err.message });
+    console.error(err);
+    res.status(502).json({ error: "Failed to start the program" });
+  }
+});
+
+// The live transcript. Everything buffered so far is replayed first, so
+// reconnecting doesn't lose output.
+router.get("/interactive/:sessionId/stream", requireLogin, (req, res) => {
+  const entry = ownedSession(req);
+  if (!entry) return res.status(404).json({ error: "No such run" });
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no", // tell any proxy not to buffer this
+  });
+
+  const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+  entry.buffer.forEach(send);
+  if (entry.session.finished) return res.end();
+
+  const onOutput = (text) => send({ type: "output", text });
+  const onExit = ({ reason }) => {
+    send({ type: "exit", text: reason });
+    res.end();
+  };
+
+  entry.session.on("output", onOutput);
+  entry.session.on("exit", onExit);
+
+  // Keeps intermediaries from closing an idle connection.
+  const ping = setInterval(() => res.write(": ping\n\n"), 20_000);
+
+  req.on("close", () => {
+    clearInterval(ping);
+    entry.session.off("output", onOutput);
+    entry.session.off("exit", onExit);
+  });
+});
+
+router.post("/interactive/:sessionId/input", requireLogin, (req, res) => {
+  const entry = ownedSession(req);
+  if (!entry) return res.status(404).json({ error: "No such run" });
+  if (entry.session.finished) {
+    return res.status(409).json({ error: "The program has already finished" });
+  }
+  const text = typeof req.body.text === "string" ? req.body.text : "";
+  entry.session.write(text);
+  res.json({ ok: true });
+});
+
+router.post("/interactive/:sessionId/stop", requireLogin, (req, res) => {
+  const entry = ownedSession(req);
+  if (!entry) return res.status(404).json({ error: "No such run" });
+  entry.session.stop();
+  res.json({ ok: true });
 });
 
 // Files of one version. A student may only read their own.
@@ -189,9 +307,13 @@ router.post(
       stderr: "",
       status: assignmentType === "text" ? "Saved" : "Not run",
     };
+    // What the student typed into the console-input box, if anything. Stored
+    // with the version so the teacher can rerun it under the same input.
+    const stdin = typeof req.body.stdin === "string" ? req.body.stdin : "";
+
     if (shouldRun) {
       try {
-        runResult = await runJavaProject(project.files, project.entry, "");
+        runResult = await runJavaProject(project.files, project.entry, stdin);
       } catch (err) {
         if (err instanceof SandboxError) return res.status(400).json({ error: err.message });
         if (err instanceof QueueFullError) return res.status(503).json({ error: err.message });
@@ -205,9 +327,9 @@ router.post(
       const info = db
         .prepare(
           `INSERT INTO submissions
-           (assignment_id, student_id, version_number, code, status,
+           (assignment_id, student_id, version_number, code, stdin, status,
             last_run_stdout, last_run_stderr, last_run_status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           assignmentId,
@@ -215,6 +337,7 @@ router.post(
           nextVersion,
           // Kept in sync with the entry file so single-file views still work.
           entryFile.content,
+          stdin,
           status === "submitted" ? "submitted" : "draft",
           runResult.stdout,
           runResult.stderr || runResult.compileOutput || "",

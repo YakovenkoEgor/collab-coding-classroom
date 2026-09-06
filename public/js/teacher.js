@@ -750,6 +750,7 @@ function renderStudentPanel() {
                       </div>
                       <div class="editor-wrap" id="editor-container"></div>
                     </div>
+                    <div id="stdin-used"></div>
                     <div class="output-panel" id="output-panel">Select a version to view its output.</div>`
              }
            </div>`
@@ -879,6 +880,7 @@ async function openVersion(v) {
   }
   const entry = viewerFiles.find((f) => f.isEntry) || viewerFiles[0];
   showFile(entry.filename);
+  renderStdinUsed(v.stdin);
   renderOutput(v.last_run_stdout, v.last_run_stderr, v.last_run_status);
   loadVersions();
 }
@@ -914,6 +916,21 @@ function renderViewerTree() {
     div.onclick = () => showFile(file.filename);
     list.appendChild(div);
   });
+}
+
+// Shows the console input the student ran this version against, so output
+// that depends on Scanner input can be read in context.
+function renderStdinUsed(stdin) {
+  const box = document.getElementById("stdin-used");
+  if (!box) return;
+  if (!stdin || stdin.trim() === "") {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = `<div class="stdin-used">
+      <div class="stdin-used-title">Ввод программы</div>
+      <pre>${escapeHtml(stdin)}</pre>
+    </div>`;
 }
 
 function renderOutput(stdout, stderr, status) {

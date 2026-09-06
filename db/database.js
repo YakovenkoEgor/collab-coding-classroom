@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS submissions (
   student_id      INTEGER NOT NULL REFERENCES users(id),
   version_number  INTEGER NOT NULL,
   code            TEXT NOT NULL,
+  stdin           TEXT NOT NULL DEFAULT '',
   status          TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'submitted')),
   last_run_stdout TEXT,
   last_run_stderr TEXT,
@@ -215,6 +216,14 @@ if (legacySubmissions.length > 0) {
 if (!columnNames("assignments").includes("type")) {
   db.exec("ALTER TABLE assignments ADD COLUMN type TEXT NOT NULL DEFAULT 'code'");
   console.log("[db] migrated assignments table: added type");
+}
+
+// Console input the student supplied for this version. Programs that read
+// with java.util.Scanner need it, and keeping it alongside the version means
+// the teacher sees the run under the same input the student used.
+if (!columnNames("submissions").includes("stdin")) {
+  db.exec("ALTER TABLE submissions ADD COLUMN stdin TEXT NOT NULL DEFAULT ''");
+  console.log("[db] migrated submissions table: added stdin");
 }
 
 // Top mark for an assignment. 15 was hard-coded everywhere before this, so
