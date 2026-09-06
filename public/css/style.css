@@ -523,3 +523,48 @@ button.secondary.danger:hover { border-color: var(--error); color: var(--error);
   max-height: 420px;
   overflow-y: auto;
 }
+
+
+/* The same input, shown read-only on the teacher's review screen */
+.stdin-used {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.stdin-used-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.stdin-used pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* --- One console for everything, the way an IDE shows a run --- */
+.terminal { cursor: text; }
+/* The input sits inline right after the output, so the caret follows the
+   prompt instead of living in a separate box. */
+.terminal-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  min-width: 12ch;
+  width: 30ch;
+  caret-color: var(--accent);
+}
+.terminal-input:focus { outline: none; border: none; }
+
+.console-output { color: var(--text); }
+.console-status { color: var(--text-dim); }
