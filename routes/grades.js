@@ -10,7 +10,10 @@ const router = express.Router();
 router.get("/export.csv", requireLogin, requireRole("teacher"), (req, res) => {
   const students = db
     .prepare(
-      `SELECT id, display_name AS displayName, group_name AS groupName
+      // Surname first, the way the class register reads.
+      `SELECT id,
+              TRIM(COALESCE(last_name, '') || ' ' || COALESCE(first_name, '')) AS fullName,
+              display_name AS displayName, group_name AS groupName
        FROM users WHERE role = 'student'
        ORDER BY group_name IS NULL, group_name, last_name, first_name`
     )
@@ -32,7 +35,7 @@ router.get("/export.csv", requireLogin, requireRole("teacher"), (req, res) => {
   ];
   for (const student of students) {
     rows.push([
-      student.displayName,
+      student.fullName || student.displayName,
       ...assignments.map((a) => {
         const score = scoreByPair.get(`${student.id}:${a.id}`);
         return score === undefined || score === null ? "" : score;

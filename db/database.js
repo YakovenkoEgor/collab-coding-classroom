@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS submissions (
   assignment_id   INTEGER NOT NULL REFERENCES assignments(id),
   student_id      INTEGER NOT NULL REFERENCES users(id),
   version_number  INTEGER NOT NULL,
+  -- Optional name the student gave this version ("цикл работает", "перед сдачей").
+  -- Empty means the version is shown by its number alone.
+  title           TEXT NOT NULL DEFAULT '',
   code            TEXT NOT NULL,
   stdin           TEXT NOT NULL DEFAULT '',
   status          TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'submitted')),
@@ -224,6 +227,13 @@ if (!columnNames("assignments").includes("type")) {
 if (!columnNames("submissions").includes("stdin")) {
   db.exec("ALTER TABLE submissions ADD COLUMN stdin TEXT NOT NULL DEFAULT ''");
   console.log("[db] migrated submissions table: added stdin");
+}
+
+// A student-chosen name for a version, so a draft can be found by what it is
+// rather than by its number. Versions saved before this keep an empty name.
+if (!columnNames("submissions").includes("title")) {
+  db.exec("ALTER TABLE submissions ADD COLUMN title TEXT NOT NULL DEFAULT ''");
+  console.log("[db] migrated submissions table: added title");
 }
 
 // Top mark for an assignment. 15 was hard-coded everywhere before this, so

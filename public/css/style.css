@@ -291,6 +291,18 @@ h3 { font-size: 14px; margin: 0 0 10px 0; color: var(--text-dim); text-transform
 .profile-table td { padding: 4px 0; font-size: 14px; }
 .profile-table td.muted { width: 140px; }
 
+/* --- The grade a student sees on an open assignment --- */
+.grade-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+.grade-panel.graded { border-color: var(--accent-dim); }
+.grade-panel .score { font-size: 20px; font-weight: 600; color: var(--accent); }
+.grade-panel .feedback { margin-top: 6px; white-space: pre-wrap; }
+
 /* --- Assignment handouts --- */
 .file-list { margin: 12px 0; }
 .file-list h4 { margin: 0 0 6px; font-size: 13px; color: var(--text-dim); font-weight: 600; }

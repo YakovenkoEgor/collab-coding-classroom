@@ -11,6 +11,14 @@ const {
 const router = express.Router();
 
 const MAX_FILES_PER_PROJECT = 20;
+const MAX_VERSION_TITLE = 80;
+
+// A version's name is free text the student types; keep it short and on one
+// line so the history list stays readable.
+function readVersionTitle(raw) {
+  if (typeof raw !== "string") return "";
+  return raw.replace(/\s+/g, " ").trim().slice(0, MAX_VERSION_TITLE);
+}
 
 // Normalises what the client sent into a file list plus an entry file.
 // Older single-file callers ({ code }) are still accepted.
@@ -184,6 +192,35 @@ router.post("/interactive/:sessionId/stop", requireLogin, (req, res) => {
   res.json({ ok: true });
 });
 
+// Rename a version. Only the student who owns it, and only while it is still a
+// draft - once handed in, the history the teacher sees stays as it was.
+router.patch(
+  "/:submissionId/title",
+  requireLogin,
+  requireRole("student"),
+  (req, res) => {
+    const submission = db
+      .prepare("SELECT * FROM submissions WHERE id = ?")
+      .get(req.params.submissionId);
+    if (!submission) return res.status(404).json({ error: "Submission not found" });
+    if (submission.student_id !== req.session.user.id) {
+      return res.status(403).json({ error: "Not your submission" });
+    }
+    if (submission.status !== "draft") {
+      return res
+        .status(400)
+        .json({ error: "Only a draft can be renamed" });
+    }
+
+    const title = readVersionTitle(req.body.title);
+    db.prepare("UPDATE submissions SET title = ? WHERE id = ?").run(
+      title,
+      submission.id
+    );
+    res.json({ submission: { ...submission, title } });
+  }
+);
+
 // Files of one version. A student may only read their own.
 router.get("/:submissionId/files", requireLogin, (req, res) => {
   const submission = db
@@ -327,14 +364,15 @@ router.post(
       const info = db
         .prepare(
           `INSERT INTO submissions
-           (assignment_id, student_id, version_number, code, stdin, status,
+           (assignment_id, student_id, version_number, title, code, stdin, status,
             last_run_stdout, last_run_stderr, last_run_status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           assignmentId,
           studentId,
           nextVersion,
+          readVersionTitle(req.body.title),
           // Kept in sync with the entry file so single-file views still work.
           entryFile.content,
           stdin,
