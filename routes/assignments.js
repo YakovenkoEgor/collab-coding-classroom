@@ -602,6 +602,7 @@ router.get(
       .prepare(
         `
       SELECT u.id AS studentId, u.display_name AS displayName,
+             u.first_name AS firstName, u.last_name AS lastName,
              s.version_number AS latestVersion, s.status, s.created_at AS lastActivity,
              g.score, g.feedback,
              (SELECT COUNT(*) FROM submission_uploads up
@@ -618,7 +619,10 @@ router.get(
       ) s ON s.student_id = u.id
       LEFT JOIN grades g ON g.assignment_id = ? AND g.student_id = u.id
       WHERE u.role = 'student'
-      ORDER BY u.display_name
+      -- A base order by surname; the client re-sorts it to put students who
+      -- have handed the work in at the top (what counts as "handed in" depends
+      -- on the assignment type, which is easier to express there).
+      ORDER BY u.last_name, u.first_name, u.display_name
     `
       )
       // fileCount, lastUpload, the two submission sub-queries, and grades

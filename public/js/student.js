@@ -78,6 +78,9 @@ function escapeHtml(str) {
 
 const TYPE_LABEL = { code: "Code", text: "Text", freeform: "Free-form" };
 
+// Version names, mirrored from routes/submissions.js
+const MAX_VERSION_TITLE = 80;
+
 // Student attachment limits, mirrored from storage.js
 const MAX_STUDENT_FILES = 3;
 const MAX_STUDENT_MB = 5;
@@ -121,6 +124,9 @@ function renderWorkCard() {
       <div class="toolbar">
         ${isText ? "" : '<button id="run-btn">▶ Run</button>'}
         ${isText ? "" : '<button class="secondary" id="console-stop" hidden>■ Стоп</button>'}
+        <input id="version-title" maxlength="${MAX_VERSION_TITLE}" style="flex:1;min-width:140px"
+               placeholder="Название версии (необязательно)">
+        <button class="secondary" id="rename-version-btn" hidden>Переименовать</button>
         <button class="secondary" id="save-draft-btn">Save draft</button>
         <button id="submit-btn">Submit</button>
       </div>
@@ -231,7 +237,54 @@ async function selectAssignment(assignment) {
     assignmentType() === "freeform" ? Promise.resolve() : loadVersions(),
     loadDiscussion(),
     loadAssignmentFiles(),
+    loadGrade(),
   ]);
+}
+
+// ---------------------------------------------------------------------
+// The grade for this assignment
+//
+// The teacher's mark, shown on the assignment itself so a student doesn't have
+// to go looking for it in the discussion.
+// ---------------------------------------------------------------------
+
+function maxScore() {
+  const value = activeAssignment && activeAssignment.max_score;
+  return Number.isInteger(value) && value > 0 ? value : 15;
+}
+
+async function loadGrade() {
+  const box = document.getElementById("grade-box");
+  if (!box) return;
+  let grade = null;
+  try {
+    ({ grade } = await api(`/api/grades/assignment/${activeAssignment.id}`));
+  } catch {
+    box.innerHTML = "";
+    return;
+  }
+
+  // A row can exist with the score cleared - that still counts as ungraded.
+  const scored = grade && grade.score !== null && grade.score !== undefined;
+  const feedback = grade && grade.feedback ? grade.feedback.trim() : "";
+
+  if (!scored && !feedback) {
+    box.innerHTML = `<div class="grade-panel">
+        <span class="muted">Оценка: ещё не выставлена. Максимум за задание — ${maxScore()}.</span>
+      </div>`;
+    return;
+  }
+
+  box.innerHTML = `<div class="grade-panel graded">
+      <div>Оценка: <span class="score">${
+        scored ? escapeHtml(String(grade.score)) : "—"
+      }</span> из ${maxScore()}</div>
+      ${
+        feedback
+          ? `<div class="feedback"><strong>Комментарий преподавателя:</strong>\n${escapeHtml(feedback)}</div>`
+          : ""
+      }
+    </div>`;
 }
 
 async function renderMainPanel() {
@@ -241,6 +294,7 @@ async function renderMainPanel() {
       <h2>${escapeHtml(activeAssignment.title)} ${typeBadge(activeAssignment.type)}</h2>
       <p class="muted">${escapeHtml(activeAssignment.description || "")}</p>
       <div id="deadline-notice">${renderDeadlineNotice(activeAssignment)}</div>
+      <div id="grade-box"></div>
       <div id="assignment-files"></div>
       ${
         assignmentType() === "code"
@@ -291,6 +345,7 @@ async function renderMainPanel() {
   if (type !== "freeform") {
     document.getElementById("save-draft-btn").onclick = () => saveVersion("draft");
     document.getElementById("submit-btn").onclick = () => saveVersion("submitted");
+    document.getElementById("rename-version-btn").onclick = renameVersion;
   }
   document.getElementById("send-message-btn").onclick = sendMessage;
   document.getElementById("message-input").addEventListener("keydown", (e) => {
@@ -663,9 +718,52 @@ function isEditable() {
   return activeVersion !== null && activeVersion.id === latest.id;
 }
 
+// ---------------------------------------------------------------------
+// Version names
+//
+// A student may put a name on a version ("цикл наконец работает") so the
+// history reads as something other than a list of numbers. The name is typed
+// before saving; a draft can also be renamed afterwards.
+// ---------------------------------------------------------------------
+
+function versionTitleValue() {
+  const box = document.getElementById("version-title");
+  return box ? box.value.trim() : "";
+}
+
+function setVersionTitleField(value) {
+  const box = document.getElementById("version-title");
+  if (box) box.value = value || "";
+}
+
+// Shows the name next to the number, e.g. v3 «перед сдачей».
+function versionLabel(v) {
+  return `v${v.version_number}${v.title ? ` «${v.title}»` : ""}`;
+}
+
+async function renameVersion() {
+  if (!activeVersion) return;
+  const button = document.getElementById("rename-version-btn");
+  button.disabled = true;
+  try {
+    const { submission } = await api(`/api/submissions/${activeVersion.id}/title`, {
+      method: "PATCH",
+      body: JSON.stringify({ title: versionTitleValue() }),
+    });
+    activeVersion = { ...activeVersion, title: submission.title };
+    setVersionTitleField(submission.title);
+    await loadVersions();
+  } catch (err) {
+    alert("Не удалось переименовать версию: " + err.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 // Loads a version's whole project into the editor and switches edit/read-only
 // mode.
 async function openVersion(v) {
+  setVersionTitleField(v.title);
   // A text answer is a single blob - no editor, no project tree.
   if (assignmentType() === "text") {
     activeVersion = v;
@@ -704,6 +802,14 @@ function applyEditMode() {
   if (saveBtn) saveBtn.disabled = !editable;
   if (submitBtn) submitBtn.disabled = !editable;
 
+  // A version's name can still be changed while it is a draft, including an
+  // older one - the name is a label, not part of the work.
+  const isDraft = !!activeVersion && activeVersion.status === "draft";
+  const renameBtn = document.getElementById("rename-version-btn");
+  const titleBox = document.getElementById("version-title");
+  if (renameBtn) renameBtn.hidden = !isDraft;
+  if (titleBox) titleBox.disabled = !editable && !isDraft;
+
   const banner = document.getElementById("readonly-banner");
   if (!banner) return;
   if (editable) {
@@ -728,12 +834,14 @@ async function loadVersions() {
   if (!activeVersion && versions.length > 0 && assignmentType() === "text") {
     const latest = latestVersion();
     activeVersion = latest;
+    setVersionTitleField(latest.title);
     const box = document.getElementById("text-editor");
     if (box) box.value = latest.code || "";
   } else if (!activeVersion && versions.length > 0) {
     const latest = latestVersion();
     await editorReady;
     activeVersion = latest;
+    setVersionTitleField(latest.title);
     try {
       const { files } = await api(`/api/submissions/${latest.id}/files`);
       const entry = (files.find((f) => f.isEntry) || files[0] || {}).filename;
@@ -759,7 +867,7 @@ async function loadVersions() {
     const div = document.createElement("div");
     div.className = "version-item" + (activeVersion && activeVersion.id === v.id ? " active" : "");
     const tag = idx === 0 ? " — latest" : " — read-only";
-    div.textContent = `v${v.version_number} — ${v.status} — ${new Date(v.created_at).toLocaleString()}${tag}`;
+    div.textContent = `${versionLabel(v)} — ${v.status} — ${new Date(v.created_at).toLocaleString()}${tag}`;
     div.onclick = () => openVersion(v);
     list.appendChild(div);
   });
@@ -942,12 +1050,16 @@ async function saveVersion(status) {
           ? { code: textAnswer() }
           : { files: projectFiles, entry: activeFile, stdin: consoleInput() }),
         status,
+        // Optional name for this version, shown in the history instead of a
+        // bare number.
+        title: versionTitleValue(),
         // Tells the server which version this edit is based on; it rejects
         // anything that isn't the latest one.
         baseVersionId: activeVersion ? activeVersion.id : null,
       }),
     });
     activeVersion = submission;
+    setVersionTitleField(submission.title);
     if (!isText) {
       renderOutput(
         submission.last_run_stdout,

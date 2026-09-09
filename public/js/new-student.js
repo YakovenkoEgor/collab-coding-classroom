@@ -75,7 +75,7 @@ async function createStudent(stayOnPage) {
     });
     if (stayOnPage) {
       showMessage(
-        `Created ${user.displayName}${user.groupName ? " (" + user.groupName + ")" : ""} — username "${user.username}".`,
+        `Created ${studentName(user)}${user.groupName ? " (" + user.groupName + ")" : ""} — username "${user.username}".`,
         "success"
       );
       clearForm(true);
@@ -97,6 +97,14 @@ function escapeHtml(str) {
   const d = document.createElement("div");
   d.textContent = str === null || str === undefined ? "" : String(str);
   return d.innerHTML;
+}
+
+// Students are listed surname first, as in teacher.js.
+function studentName(row) {
+  const last = (row.lastName || "").trim();
+  const first = (row.firstName || "").trim();
+  if (last && first) return `${last} ${first}`;
+  return last || first || row.displayName || "";
 }
 
 function showImportMessage(text, kind) {
@@ -153,7 +161,7 @@ function renderImportResult({ created, errors, total }) {
           ${created
             .map(
               (c) => `<tr>
-                <td>${escapeHtml(c.displayName)}</td>
+                <td>${escapeHtml(studentName(c))}</td>
                 <td><code>${escapeHtml(c.username)}</code></td>
                 <td><code>${escapeHtml(c.password)}</code></td>
                 <td class="muted">${escapeHtml(c.email || "—")}</td>
