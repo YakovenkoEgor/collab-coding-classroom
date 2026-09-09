@@ -32,6 +32,25 @@ function currentMaxScore() {
   return Number.isInteger(value) && value > 0 ? value : DEFAULT_MAX_SCORE;
 }
 
+// ---------- Student names ----------
+//
+// Students are listed the way a register lists them: surname first, then given
+// name. display_name is stored as "Имя Фамилия", so it is only a fallback for
+// rows that predate the split name fields.
+function studentName(row) {
+  if (!row) return "";
+  const last = (row.lastName || "").trim();
+  const first = (row.firstName || "").trim();
+  if (last && first) return `${last} ${first}`;
+  return last || first || row.displayName || "";
+}
+
+// Surname-first comparison, so "Ёлкина" and "елкина" land where a teacher
+// expects them to.
+function byStudentName(a, b) {
+  return studentName(a).localeCompare(studentName(b), "ru", { sensitivity: "base" });
+}
+
 // Assignment kinds, mirrored from routes/assignments.js
 const ASSIGNMENT_TYPES = [
   { value: "code", label: "Code", hint: "a Java project the student runs" },
@@ -622,6 +641,16 @@ async function renderOverview() {
     return;
   }
   const isFreeform = activeAssignment.type === "freeform";
+
+  // Work that is waiting to be looked at comes first: handed in, then started
+  // but not handed in, then untouched - each block alphabetical by surname.
+  const handInRank = (s) => {
+    if (isFreeform) return s.fileCount > 0 ? 0 : 2;
+    if (s.status === "submitted") return 0;
+    return s.status ? 1 : 2;
+  };
+  roster.sort((a, b) => handInRank(a) - handInRank(b) || byStudentName(a, b));
+
   roster.forEach((s) => {
     // Free-form work has no versions - what a student has is a set of files.
     const handedIn = isFreeform ? s.fileCount > 0 : !!s.status;
@@ -629,7 +658,7 @@ async function renderOverview() {
     const tr = document.createElement("tr");
     tr.className = "student-row";
     tr.innerHTML = `
-      <td>${escapeHtml(s.displayName)}</td>
+      <td>${escapeHtml(studentName(s))}</td>
       <td>${
         isFreeform
           ? s.fileCount
@@ -653,7 +682,7 @@ async function renderOverview() {
           : "—"
       }</td>
     `;
-    tr.onclick = () => selectStudent(s.studentId, s.displayName);
+    tr.onclick = () => selectStudent(s.studentId, studentName(s));
     tbody.appendChild(tr);
   });
 }
@@ -849,7 +878,9 @@ async function loadVersions() {
   versions.forEach((v, idx) => {
     const div = document.createElement("div");
     div.className = "version-item" + (activeVersion && activeVersion.id === v.id ? " active" : "");
-    div.textContent = `v${v.version_number} — ${v.status} — ${new Date(v.created_at).toLocaleString()}`;
+    // The student may have named the version; show that name next to its number.
+    const name = v.title ? ` «${v.title}»` : "";
+    div.textContent = `v${v.version_number}${name} — ${v.status} — ${new Date(v.created_at).toLocaleString()}`;
     div.onclick = () => openVersion(v);
     list.appendChild(div);
     if (idx === 0 && !activeVersion) div.click(); // auto-select latest
@@ -1103,12 +1134,13 @@ async function loadStudentManage() {
     heading.textContent = groupName || "No group";
     container.appendChild(heading);
 
+    members.sort(byStudentName);
     members.forEach((u) => {
       const div = document.createElement("div");
       div.className =
         "assignment-item" +
         (activeProfile && activeProfile.id === u.id ? " active" : "");
-      div.innerHTML = `<div class="title">${escapeHtml(u.displayName)}${reviewBadge(pendingReview.byStudent[u.id], "student")}</div>
+      div.innerHTML = `<div class="title">${escapeHtml(studentName(u))}${reviewBadge(pendingReview.byStudent[u.id], "student")}</div>
         <div class="meta">${escapeHtml(u.username)}</div>`;
       div.onclick = () => selectStudentProfile(u.id);
       container.appendChild(div);
@@ -1182,7 +1214,7 @@ async function selectStudentProfile(studentId) {
   const main = document.getElementById("main-content");
   main.innerHTML = `
     <div class="card">
-      <h2>${escapeHtml(student.displayName)}</h2>
+      <h2>${escapeHtml(studentName(student))}</h2>
       <table class="profile-table">
         <tr><td class="muted">Username</td><td>${escapeHtml(student.username)}</td></tr>
         <tr><td class="muted">First name</td><td>${escapeHtml(student.firstName || "—")}</td></tr>
@@ -1242,7 +1274,7 @@ async function selectStudentProfile(studentId) {
       activeAssignment = assignment;
       await loadAssignments();
       await loadStudentManage();
-      await selectStudent(student.id, student.displayName);
+      await selectStudent(student.id, studentName(student));
     };
     tbody.appendChild(tr);
   });

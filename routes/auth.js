@@ -261,6 +261,8 @@ router.post("/users/import", requireLogin, requireRole("teacher"), (req, res) =>
         line,
         username,
         displayName: `${firstName} ${lastName}`,
+        firstName,
+        lastName,
         email: email || null,
         password,
       });
@@ -310,11 +312,12 @@ router.get("/users/export.csv", requireLogin, requireRole("teacher"), (req, res)
     )
     .all();
 
-  const rows = [["Имя", "Фамилия", "Логин", "Пароль"]];
+  // Surname first, the same order the teacher sees on screen.
+  const rows = [["Фамилия", "Имя", "Логин", "Пароль"]];
   for (const s of students) {
     rows.push([
-      s.firstName || "",
       s.lastName || "",
+      s.firstName || "",
       s.username,
       // Accounts created before passwords were kept have nothing to show.
       s.initialPassword || "",
