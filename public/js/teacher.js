@@ -772,7 +772,7 @@ function renderStudentPanel() {
              ${
                activeAssignment.type === "text"
                  ? '<div class="text-view" id="text-view">Select a version to read it.</div>'
-                 : `<div class="editor-layout">
+                 : `<div class="editor-layout" id="editor-layout">
                       <div class="file-tree">
                         <div class="file-tree-header">Project</div>
                         <div id="file-list"><p class="muted" style="font-size:12px">—</p></div>
@@ -861,6 +861,9 @@ async function setupViewer() {
     minimap: { enabled: false },
     readOnly: true,
   });
+  // Same drag-to-resize grip the student has, so long files can be read
+  // without scrolling a short window.
+  makeEditorResizable(document.getElementById("editor-layout"));
 }
 
 async function loadVersions() {

@@ -361,6 +361,37 @@ h3 { font-size: 14px; margin: 0 0 10px 0; color: var(--text-dim); text-transform
 }
 .editor-layout .editor-wrap { flex: 1; min-width: 0; }
 
+/* A layout the user can drag taller or shorter (see js/ui.js). The height
+   lives on the layout, and the tree and the editor follow it, so both sides
+   stay the same height whatever it is set to. */
+.editor-layout.resizable { height: var(--editor-height, 420px); }
+.editor-layout.resizable .editor-wrap,
+.editor-layout.resizable .file-tree { height: 100%; }
+
+.editor-resizer {
+  height: 12px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel-raised);
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* A drag must not select the text it passes over. */
+  user-select: none;
+  touch-action: none;
+}
+.editor-resizer::after {
+  content: "";
+  width: 46px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.editor-resizer:hover { border-color: var(--accent); }
+.editor-resizer:hover::after { background: var(--accent); }
+
 .file-tree {
   width: 190px;
   flex: 0 0 190px;

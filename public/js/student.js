@@ -110,7 +110,7 @@ function renderWorkCard() {
       ${
         isText
           ? '<textarea id="text-editor" class="text-editor" placeholder="Write your answer here…"></textarea>'
-          : `<div class="editor-layout">
+          : `<div class="editor-layout" id="editor-layout">
                <div class="file-tree">
                  <div class="file-tree-header">Project</div>
                  <div id="file-list"></div>
@@ -381,6 +381,8 @@ async function setupEditor() {
     fontSize: 14,
     minimap: { enabled: false },
   });
+  // The grip under the editor; Monaco's automaticLayout follows the height.
+  makeEditorResizable(document.getElementById("editor-layout"));
   renderFileTree();
 }
 
