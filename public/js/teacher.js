@@ -172,27 +172,36 @@ document.getElementById("new-assignment-btn").onclick = async () => {
 
 async function renderNewAssignmentForm() {
   // The study groups the form can set separate rules for. A failure here only
-  // costs the group table, so the form still opens without it.
-  let groups = [];
+  // costs the group table, so the form still opens - but it says what went
+  // wrong instead of claiming there are no groups.
+  let groups = null;
+  let groupsError = null;
   try {
     ({ groups } = await api("/api/assignments/groups"));
-  } catch {
-    groups = [];
+  } catch (err) {
+    groupsError = err.message;
   }
-  renderAssignmentForm(null, groups);
+  renderAssignmentForm(null, groups, groupsError);
 }
 
 // One form for both creating and editing. `existing` is null when creating,
 // otherwise { assignment, files, starterFiles, groupRules, groups } as
 // returned by the API; `groups` is passed separately when creating.
-function renderAssignmentForm(existing, newGroups) {
+function renderAssignmentForm(existing, newGroups, groupsError) {
   const editing = !!existing;
   const assignment = editing ? existing.assignment : null;
   editingAssignmentId = editing ? assignment.id : null;
   removedHandoutIds = [];
 
   // One row per study group, pre-filled with the exception it already has.
-  const groups = (editing ? existing.groups : newGroups) || [];
+  // A missing list (rather than an empty one) means the server didn't send it:
+  // usually a server still running a version older than this page's script.
+  const groups = editing ? existing.groups : newGroups;
+  const groupsProblem =
+    groupsError ||
+    (Array.isArray(groups)
+      ? null
+      : "the server did not return the list of study groups — it may still be running an older version (restart it), while the browser already has the new page");
   const ruleByGroup = new Map(
     ((editing && existing.groupRules) || []).map((rule) => [rule.groupName, rule])
   );
@@ -255,7 +264,7 @@ function renderAssignmentForm(existing, newGroups) {
       </div>
       <div class="form-row">
         <label>Per-group deadlines and scores (optional)</label>
-        ${renderGroupRuleEditor(groups, ruleByGroup)}
+        ${renderGroupRuleEditor(groups || [], ruleByGroup, groupsProblem)}
       </div>
       <div class="form-row" id="starter-code-row">
         <label>Starter project</label>
@@ -720,7 +729,14 @@ async function renderOverview() {
 // The table inside the assignment form. Every study group gets a row; an
 // empty field means the group follows the assignment's own value, so clearing
 // both fields removes the exception on save.
-function renderGroupRuleEditor(groups, ruleByGroup) {
+function renderGroupRuleEditor(groups, ruleByGroup, problem) {
+  // Told apart on purpose: "the class has no groups" is a normal state, while
+  // "the list could not be read" is a fault worth naming.
+  if (problem) {
+    return `<div class="form-message error">
+        Could not load the study groups: ${escapeHtml(problem)}.
+      </div>`;
+  }
   if (groups.length === 0) {
     return `<span class="muted" style="font-size:12px">
         There are no study groups yet. Add students with a group and you can

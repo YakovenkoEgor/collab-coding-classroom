@@ -2,6 +2,7 @@ const express = require("express");
 const db = require("../db/database");
 const { requireLogin, requireRole } = require("../middleware/auth");
 const { toCsv } = require("../csv");
+const rules = require("../assignmentRules");
 
 const router = express.Router();
 
@@ -28,14 +29,28 @@ router.get("/export.csv", requireLogin, requireRole("teacher"), (req, res) => {
     grades.map((g) => [`${g.student_id}:${g.assignment_id}`, g.score])
   );
 
-  // The top mark now differs per assignment, so a bare number in a cell would
-  // be ambiguous - the column header carries it.
+  // The top mark differs per assignment, and can differ per study group within
+  // one assignment, so a bare number in a cell would be ambiguous - the column
+  // header carries the maximum, naming the groups that have their own.
+  function maxScoreLabel(assignment) {
+    const overrides = rules
+      .rulesForAssignment(assignment.id)
+      .filter((r) => r.maxScore !== null);
+    if (overrides.length === 0) return `макс. ${assignment.maxScore}`;
+    const perGroup = overrides
+      .map((r) => `${r.groupName} — ${r.maxScore}`)
+      .join(", ");
+    return `макс. ${assignment.maxScore}; ${perGroup}`;
+  }
+
+  // The group column makes those per-group maxima readable row by row.
   const rows = [
-    ["Студент", ...assignments.map((a) => `${a.title} (макс. ${a.maxScore})`)],
+    ["Студент", "Группа", ...assignments.map((a) => `${a.title} (${maxScoreLabel(a)})`)],
   ];
   for (const student of students) {
     rows.push([
       student.fullName || student.displayName,
+      student.groupName || "",
       ...assignments.map((a) => {
         const score = scoreByPair.get(`${student.id}:${a.id}`);
         return score === undefined || score === null ? "" : score;
@@ -95,7 +110,12 @@ router.put(
       .get(req.params.assignmentId);
     if (!assignment) return res.status(404).json({ error: "Assignment not found" });
 
-    const normalized = normalizeScore(score, assignment.max_score);
+    // The top mark depends on the student's study group, which may have its
+    // own rule for this assignment.
+    const maxScore =
+      rules.maxScoreFor(req.params.assignmentId, studentId) ?? assignment.max_score;
+
+    const normalized = normalizeScore(score, maxScore);
     if (normalized.error) return res.status(400).json({ error: normalized.error });
 
     db.prepare(

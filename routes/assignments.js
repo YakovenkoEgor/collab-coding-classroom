@@ -4,6 +4,7 @@ const { requireLogin, requireRole } = require("../middleware/auth");
 const storage = require("../storage");
 const { isValidJavaFilename, SandboxError } = require("../sandbox");
 const { withDeadlineState } = require("../deadlines");
+const rules = require("../assignmentRules");
 
 const router = express.Router();
 
@@ -109,14 +110,28 @@ router.get("/", requireLogin, (req, res) => {
     return res.json({ assignments: rows });
   }
 
+  // The deadline and the top mark are the ones this student's study group
+  // gets; they are aliased so a.* keeps its own raw columns intact, and then
+  // put in place of them below.
   const rows = db
     .prepare(
-      `SELECT a.*, ${HAS_SUBMITTED_SQL} AS hasSubmitted
-       FROM assignments a ${where} ORDER BY a.created_at DESC`
+      `SELECT a.*, ${HAS_SUBMITTED_SQL} AS hasSubmitted,
+              COALESCE(r.deadline, a.deadline) AS groupDeadline,
+              COALESCE(r.max_score, a.max_score) AS groupMaxScore
+       FROM assignments a ${rules.RULE_JOIN_FOR_STUDENT}
+       ${where} ORDER BY a.created_at DESC`
     )
-    .all(req.session.user.id, req.session.user.id);
+    .all(req.session.user.id, req.session.user.id, req.session.user.id);
 
-  res.json({ assignments: rows.map(withDeadlineState) });
+  res.json({
+    assignments: rows.map((row) =>
+      withDeadlineState({
+        ...row,
+        deadline: row.groupDeadline,
+        max_score: row.groupMaxScore,
+      })
+    ),
+  });
 });
 
 // Teacher-only: which submitted work is still waiting to be graded.
@@ -159,6 +174,12 @@ router.get("/review/pending", requireLogin, requireRole("teacher"), (req, res) =
   res.json({ byAssignment, byStudent, total: rows.length });
 });
 
+// Teacher-only: the study groups a new assignment can give its own rules to.
+// Registered before "/:id" so "groups" isn't read as an assignment id.
+router.get("/groups", requireLogin, requireRole("teacher"), (req, res) => {
+  res.json({ groups: rules.knownGroups(null) });
+});
+
 router.get("/:id", requireLogin, (req, res) => {
   const assignment = db
     .prepare("SELECT * FROM assignments WHERE id = ?")
@@ -168,6 +189,9 @@ router.get("/:id", requireLogin, (req, res) => {
     assignment,
     files: filesForAssignment(assignment.id),
     starterFiles: starterFilesFor(assignment.id),
+    groupRules: rules.rulesForAssignment(assignment.id),
+    // The groups the edit form offers rows for.
+    groups: rules.knownGroups(assignment.id),
   });
 });
 
@@ -234,6 +258,67 @@ function normalizeDeadline(deadline) {
   return normalized;
 }
 
+// Per-group exceptions from the form: [{ groupName, deadline, maxScore }].
+// A row that overrides nothing is dropped rather than stored as a no-op, so
+// clearing both fields in the form removes the exception.
+function readGroupRules(body) {
+  const raw = Array.isArray(body.groupRules) ? body.groupRules : [];
+  if (raw.length > rules.MAX_GROUP_RULES) {
+    throw new SandboxError(
+      `At most ${rules.MAX_GROUP_RULES} study groups can have their own rules`
+    );
+  }
+
+  const parsed = [];
+  const seen = new Set();
+  for (const item of raw) {
+    const groupName = String((item && item.groupName) || "").trim();
+    if (!groupName) continue;
+    if (groupName.length > rules.MAX_GROUP_NAME) {
+      throw new SandboxError(`Study group name is too long: "${groupName}"`);
+    }
+
+    const deadline = normalizeDeadline(item.deadline);
+    const hasMax =
+      item.maxScore !== undefined && item.maxScore !== null && item.maxScore !== "";
+    const maxScore = hasMax ? normalizeMaxScore(item.maxScore) : null;
+    if (deadline === null && maxScore === null) continue;
+
+    if (seen.has(groupName)) {
+      throw new SandboxError(`Study group "${groupName}" is listed twice`);
+    }
+    seen.add(groupName);
+    parsed.push({ groupName, deadline, maxScore });
+  }
+  return parsed;
+}
+
+// Marks already given that the new limits would put out of range. Checked per
+// group, because each group can have a top mark of its own.
+function gradesAboveNewMax(assignmentId, defaultMax, groupRules) {
+  const maxFor = (groupName) => {
+    const rule = groupRules.find((r) => r.groupName === groupName);
+    return rule && rule.maxScore !== null ? rule.maxScore : defaultMax;
+  };
+
+  return db
+    .prepare(
+      // '' stands for "no group" - those students follow the assignment.
+      `SELECT COALESCE(u.group_name, '') AS groupName,
+              MAX(g.score) AS topScore, COUNT(*) AS graded
+       FROM grades g JOIN users u ON u.id = g.student_id
+       WHERE g.assignment_id = ? AND g.score IS NOT NULL
+       GROUP BY COALESCE(u.group_name, '')`
+    )
+    .all(assignmentId)
+    .filter((row) => row.topScore > maxFor(row.groupName))
+    .map((row) => ({
+      groupName: row.groupName,
+      topScore: row.topScore,
+      newMax: maxFor(row.groupName),
+    }));
+}
+
 // Teacher-only: create an assignment, optionally with handout files.
 // files: [{ name, data }] where data is base64 (a data: URL is also accepted).
 router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
@@ -250,15 +335,19 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
 
   let assignmentType;
   let maxScore;
+  let groupRules;
   let starter = null;
   try {
     assignmentType = normalizeType(req.body.type);
     maxScore = normalizeMaxScore(req.body.maxScore);
+    groupRules = readGroupRules(req.body);
     // Only code assignments carry a Java starter project. A text assignment's
     // starter is the text the student begins from; free-form has none.
     if (assignmentType === "code") starter = readStarterProject(req.body);
   } catch (err) {
-    if (err instanceof SandboxError) return res.status(400).json({ error: err.message });
+    if (err instanceof SandboxError || err instanceof DeadlineError) {
+      return res.status(400).json({ error: err.message });
+    }
     throw err;
   }
 
@@ -296,6 +385,8 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
           assignmentType,
           maxScore
         );
+
+      rules.replaceRules(info.lastInsertRowid, groupRules);
 
       const insertStarter = db.prepare(
         `INSERT INTO assignment_starter_files (assignment_id, filename, content, is_entry)
@@ -335,6 +426,7 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
       assignment,
       files: filesForAssignment(assignmentId),
       starterFiles: starterFilesFor(assignmentId),
+      groupRules: rules.rulesForAssignment(assignmentId),
     });
   } catch (err) {
     // Don't leave orphaned files on disk if the database write fails.
@@ -360,6 +452,7 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
   let starter = null;
   let assignmentType;
   let maxScore;
+  let groupRules;
   try {
     dueAt = normalizeDeadline(deadline);
     assignmentType = req.body.type === undefined ? assignment.type : normalizeType(req.body.type);
@@ -367,6 +460,12 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
       req.body.maxScore === undefined
         ? assignment.max_score
         : normalizeMaxScore(req.body.maxScore);
+    // Leaving groupRules out of the request keeps the current exceptions;
+    // sending an empty list clears them.
+    groupRules =
+      req.body.groupRules === undefined
+        ? rules.rulesForAssignment(assignment.id)
+        : readGroupRules(req.body);
     if (assignmentType === "code") starter = readStarterProject(req.body);
   } catch (err) {
     if (err instanceof DeadlineError || err instanceof SandboxError) {
@@ -375,20 +474,20 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
     throw err;
   }
 
-  // Lowering the top mark below marks already given would leave grades that
-  // the grade box itself would refuse to accept. Say so instead of silently
-  // creating that state.
-  if (maxScore < assignment.max_score) {
-    const above = db
-      .prepare(
-        "SELECT COUNT(*) c FROM grades WHERE assignment_id = ? AND score > ?"
+  // Lowering a top mark below marks already given would leave grades that the
+  // grade box itself would refuse to accept. Say so instead of silently
+  // creating that state - per group, since each can have its own maximum.
+  const conflicts = gradesAboveNewMax(assignment.id, maxScore, groupRules);
+  if (conflicts.length > 0) {
+    const where = conflicts
+      .map(
+        (c) =>
+          `${c.groupName || "без группы"}: уже выставлено ${c.topScore}, новый максимум ${c.newMax}`
       )
-      .get(assignment.id, maxScore).c;
-    if (above > 0) {
-      return res.status(409).json({
-        error: `${above} student(s) already have a grade above ${maxScore}. Lower those grades first, or keep the maximum at ${assignment.max_score}.`,
-      });
-    }
+      .join("; ");
+    return res.status(409).json({
+      error: `Оценки выше нового максимума уже выставлены (${where}). Исправьте эти оценки или оставьте прежний максимум.`,
+    });
   }
 
   // Changing the type would strand whatever the students have already handed
@@ -456,6 +555,8 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
         assignment.id
       );
 
+      rules.replaceRules(assignment.id, groupRules);
+
       db.prepare("DELETE FROM assignment_starter_files WHERE assignment_id = ?").run(
         assignment.id
       );
@@ -502,6 +603,7 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
       assignment: db.prepare("SELECT * FROM assignments WHERE id = ?").get(assignment.id),
       files: filesForAssignment(assignment.id),
       starterFiles: starterFilesFor(assignment.id),
+      groupRules: rules.rulesForAssignment(assignment.id),
     });
   } catch (err) {
     storedFiles.forEach((f) => storage.removeFile(f.storedName));
@@ -539,6 +641,9 @@ router.delete("/:id", requireLogin, requireRole("teacher"), (req, res) => {
     db.prepare("DELETE FROM grades WHERE assignment_id = ?").run(assignment.id);
     db.prepare("DELETE FROM assignment_files WHERE assignment_id = ?").run(assignment.id);
     db.prepare("DELETE FROM assignment_starter_files WHERE assignment_id = ?").run(
+      assignment.id
+    );
+    db.prepare("DELETE FROM assignment_group_rules WHERE assignment_id = ?").run(
       assignment.id
     );
     db.prepare("DELETE FROM submission_uploads WHERE assignment_id = ?").run(assignment.id);
@@ -603,6 +708,10 @@ router.get(
         `
       SELECT u.id AS studentId, u.display_name AS displayName,
              u.first_name AS firstName, u.last_name AS lastName,
+             u.group_name AS groupName, a.archived,
+             -- The deadline and top mark of this student's own group.
+             COALESCE(r.deadline, a.deadline) AS deadline,
+             COALESCE(r.max_score, a.max_score) AS maxScore,
              s.version_number AS latestVersion, s.status, s.created_at AS lastActivity,
              g.score, g.feedback,
              (SELECT COUNT(*) FROM submission_uploads up
@@ -610,6 +719,8 @@ router.get(
              (SELECT MAX(created_at) FROM submission_uploads up
               WHERE up.assignment_id = ? AND up.student_id = u.id) AS lastUpload
       FROM users u
+      JOIN assignments a ON a.id = ?
+      ${rules.RULE_JOIN_FOR_USERS}
       LEFT JOIN (
         SELECT * FROM submissions
         WHERE assignment_id = ?
@@ -625,15 +736,27 @@ router.get(
       ORDER BY u.last_name, u.first_name, u.display_name
     `
       )
-      // fileCount, lastUpload, the two submission sub-queries, and grades
+      // fileCount, lastUpload, the assignment join, the two submission
+      // sub-queries, and grades - every one of them the assignment id.
       .all(
+        req.params.id,
         req.params.id,
         req.params.id,
         req.params.id,
         req.params.id,
         req.params.id
       );
-    res.json({ students: rows });
+    // Students who haven't handed the work in get the same due-soon/overdue
+    // flag the teacher sees in a profile, now against their group's date.
+    res.json({
+      students: rows.map((row) =>
+        withDeadlineState({
+          ...row,
+          hasSubmitted: isFreeform ? row.fileCount > 0 : row.status === "submitted",
+        })
+      ),
+      groupRules: rules.rulesForAssignment(req.params.id),
+    });
   }
 );
 

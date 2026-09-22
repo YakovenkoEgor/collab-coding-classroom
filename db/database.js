@@ -94,6 +94,18 @@ CREATE TABLE IF NOT EXISTS submission_files (
   UNIQUE(submission_id, filename)
 );
 
+-- Per-study-group exceptions to an assignment's deadline and top mark.
+-- A row overrides only the fields it fills in; NULL means "use the
+-- assignment's own value". Groups without a row here follow the assignment,
+-- and so do students who belong to no group.
+CREATE TABLE IF NOT EXISTS assignment_group_rules (
+  assignment_id INTEGER NOT NULL REFERENCES assignments(id),
+  group_name    TEXT NOT NULL,
+  deadline      TEXT,
+  max_score     INTEGER,
+  PRIMARY KEY (assignment_id, group_name)
+);
+
 -- One discussion thread per (assignment, student) pair.
 CREATE TABLE IF NOT EXISTS discussions (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
