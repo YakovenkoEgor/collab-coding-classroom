@@ -26,8 +26,12 @@ const MIN_MAX_SCORE = 1;
 const MAX_MAX_SCORE = 100;
 const DEFAULT_MAX_SCORE = 15;
 
-// Top mark of the assignment currently open for review.
+// Top mark that applies right now. While one student's work is open it is
+// their study group's maximum (groups can have their own - see
+// assignmentRules.js); otherwise the assignment's own.
 function currentMaxScore() {
+  const forStudent = activeStudent && activeStudent.maxScore;
+  if (Number.isInteger(forStudent) && forStudent > 0) return forStudent;
   const value = activeAssignment && activeAssignment.max_score;
   return Number.isInteger(value) && value > 0 ? value : DEFAULT_MAX_SCORE;
 }
@@ -166,17 +170,32 @@ document.getElementById("new-assignment-btn").onclick = async () => {
   renderNewAssignmentForm();
 };
 
-function renderNewAssignmentForm() {
-  renderAssignmentForm(null);
+async function renderNewAssignmentForm() {
+  // The study groups the form can set separate rules for. A failure here only
+  // costs the group table, so the form still opens without it.
+  let groups = [];
+  try {
+    ({ groups } = await api("/api/assignments/groups"));
+  } catch {
+    groups = [];
+  }
+  renderAssignmentForm(null, groups);
 }
 
 // One form for both creating and editing. `existing` is null when creating,
-// otherwise { assignment, files, starterFiles } as returned by the API.
-function renderAssignmentForm(existing) {
+// otherwise { assignment, files, starterFiles, groupRules, groups } as
+// returned by the API; `groups` is passed separately when creating.
+function renderAssignmentForm(existing, newGroups) {
   const editing = !!existing;
   const assignment = editing ? existing.assignment : null;
   editingAssignmentId = editing ? assignment.id : null;
   removedHandoutIds = [];
+
+  // One row per study group, pre-filled with the exception it already has.
+  const groups = (editing ? existing.groups : newGroups) || [];
+  const ruleByGroup = new Map(
+    ((editing && existing.groupRules) || []).map((rule) => [rule.groupName, rule])
+  );
 
   const main = document.getElementById("main-content");
   main.innerHTML = `
@@ -219,7 +238,7 @@ function renderAssignmentForm(existing) {
                value="${editing ? assignment.max_score : DEFAULT_MAX_SCORE}">
         <span class="muted" style="font-size:12px">
           Whole number from ${MIN_MAX_SCORE} to ${MAX_MAX_SCORE}. The grade box
-          for this assignment counts up to it.
+          counts up to it for every group without its own value below.
         </span>
       </div>
       <div class="form-row">
@@ -230,9 +249,13 @@ function renderAssignmentForm(existing) {
             : ""
         }">
         <span class="muted" style="font-size:12px">
-          Students who haven't submitted are flagged in their profile once
-          fewer than two days remain.
+          Students who haven't submitted are flagged once fewer than two days
+          remain. Applies to every group without its own date below.
         </span>
+      </div>
+      <div class="form-row">
+        <label>Per-group deadlines and scores (optional)</label>
+        ${renderGroupRuleEditor(groups, ruleByGroup)}
       </div>
       <div class="form-row" id="starter-code-row">
         <label>Starter project</label>
@@ -358,6 +381,7 @@ function renderAssignmentForm(existing) {
         starterEntry,
         starterText: document.getElementById("a-starter-text").value,
         deadline: document.getElementById("a-deadline").value,
+        groupRules: collectGroupRules(),
         removeFileIds: removedHandoutIds,
       });
 
@@ -600,7 +624,7 @@ async function selectAssignment(assignment) {
 
 async function renderOverview() {
   // `roster` rather than `students` so it doesn't shadow the sidebar list.
-  const [{ students: roster }, { files }] = await Promise.all([
+  const [{ students: roster, groupRules }, { files }] = await Promise.all([
     api(`/api/assignments/${activeAssignment.id}/overview`),
     api(`/api/assignments/${activeAssignment.id}/files`),
   ]);
@@ -609,13 +633,16 @@ async function renderOverview() {
     <div class="card">
       <h2>${escapeHtml(activeAssignment.title)} ${typeBadge(activeAssignment.type)}</h2>
       <p class="muted">${escapeHtml(activeAssignment.description || "")}</p>
-      ${
-        activeAssignment.deadline
-          ? `<p class="muted">Deadline: <strong>${escapeHtml(
-              formatDeadline(activeAssignment.deadline)
-            )}</strong></p>`
-          : ""
-      }
+      <p class="muted">
+        ${
+          activeAssignment.deadline
+            ? `Deadline: <strong>${escapeHtml(
+                formatDeadline(activeAssignment.deadline)
+              )}</strong> · `
+            : "No deadline · "
+        }max score: <strong>${currentMaxScore()}</strong>
+      </p>
+      ${renderGroupRuleSummary(groupRules)}
       ${renderFileLinks(activeAssignment.id, files)}
       <div class="toolbar">
         <button class="secondary" id="edit-assignment-btn">Edit assignment</button>
@@ -626,7 +653,7 @@ async function renderOverview() {
       <h3>Student submissions</h3>
       <table>
         <thead>
-          <tr><th>Student</th><th>Latest version</th><th>Status</th><th>Last activity</th><th>Grade</th></tr>
+          <tr><th>Student</th><th>Group</th><th>Latest version</th><th>Status</th><th>Last activity</th><th>Grade</th></tr>
         </thead>
         <tbody id="student-rows"></tbody>
       </table>
@@ -637,7 +664,7 @@ async function renderOverview() {
 
   const tbody = document.getElementById("student-rows");
   if (roster.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" class="muted">No students yet — add some in the sidebar.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">No students yet — add some in the sidebar.</td></tr>';
     return;
   }
   const isFreeform = activeAssignment.type === "freeform";
@@ -658,7 +685,8 @@ async function renderOverview() {
     const tr = document.createElement("tr");
     tr.className = "student-row";
     tr.innerHTML = `
-      <td>${escapeHtml(studentName(s))}</td>
+      <td>${escapeHtml(studentName(s))}${deadlineMark(s)}</td>
+      <td class="muted">${escapeHtml(s.groupName || "—")}</td>
       <td>${
         isFreeform
           ? s.fileCount
@@ -678,13 +706,85 @@ async function renderOverview() {
       <td class="muted">${activity ? new Date(activity).toLocaleString() : "—"}</td>
       <td>${
         s.score !== null && s.score !== undefined
-          ? `${s.score} / ${currentMaxScore()}`
+          ? `${s.score} / ${s.maxScore ?? currentMaxScore()}`
           : "—"
       }</td>
     `;
-    tr.onclick = () => selectStudent(s.studentId, studentName(s));
+    tr.onclick = () => selectStudent(s.studentId, studentName(s), s.maxScore);
     tbody.appendChild(tr);
   });
+}
+
+// ---------- Per-group deadlines and maximum scores ----------
+
+// The table inside the assignment form. Every study group gets a row; an
+// empty field means the group follows the assignment's own value, so clearing
+// both fields removes the exception on save.
+function renderGroupRuleEditor(groups, ruleByGroup) {
+  if (groups.length === 0) {
+    return `<span class="muted" style="font-size:12px">
+        There are no study groups yet. Add students with a group and you can
+        give each group its own deadline and maximum score here.
+      </span>`;
+  }
+
+  const rows = groups
+    .map((groupName) => {
+      const rule = ruleByGroup.get(groupName) || {};
+      const deadline = rule.deadline
+        ? escapeHtml(String(rule.deadline).replace(" ", "T"))
+        : "";
+      const maxScore =
+        rule.maxScore === null || rule.maxScore === undefined ? "" : rule.maxScore;
+      return `<tr data-group="${escapeHtml(groupName)}">
+          <td>${escapeHtml(groupName)}</td>
+          <td><input type="datetime-local" class="group-deadline" value="${deadline}"></td>
+          <td><input type="number" class="group-max-score" step="1"
+                     min="${MIN_MAX_SCORE}" max="${MAX_MAX_SCORE}"
+                     placeholder="—" value="${maxScore}"></td>
+        </tr>`;
+    })
+    .join("");
+
+  return `<span class="muted" style="font-size:12px">
+        Leave a field empty to keep the assignment's own value for that group.
+      </span>
+      <table class="group-rules">
+        <thead><tr><th>Study group</th><th>Deadline</th><th>Max score</th></tr></thead>
+        <tbody id="group-rules-body">${rows}</tbody>
+      </table>`;
+}
+
+// What the group table is currently showing, in the shape the API expects.
+// Rows that override nothing are dropped by the server.
+function collectGroupRules() {
+  return Array.from(document.querySelectorAll("#group-rules-body tr")).map((tr) => ({
+    groupName: tr.dataset.group,
+    deadline: tr.querySelector(".group-deadline").value,
+    maxScore: tr.querySelector(".group-max-score").value,
+  }));
+}
+
+// The exceptions in force, shown under the assignment's own dates so it is
+// clear at a glance which group is on a different schedule or scale.
+function renderGroupRuleSummary(groupRules) {
+  if (!Array.isArray(groupRules) || groupRules.length === 0) return "";
+  const lines = groupRules
+    .map((rule) => {
+      const deadline = rule.deadline
+        ? `deadline ${escapeHtml(formatDeadline(rule.deadline))}`
+        : "same deadline";
+      const max =
+        rule.maxScore !== null && rule.maxScore !== undefined
+          ? `max score ${rule.maxScore}`
+          : "same max score";
+      return `<li><strong>${escapeHtml(rule.groupName)}</strong> — ${deadline}, ${max}</li>`;
+    })
+    .join("");
+  return `<div class="group-rules-summary">
+      <span class="muted">Group exceptions:</span>
+      <ul>${lines}</ul>
+    </div>`;
 }
 
 async function editActiveAssignment() {
@@ -737,8 +837,10 @@ async function deleteActiveAssignment() {
 
 // ---------- Student review ----------
 
-async function selectStudent(studentId, displayName) {
-  activeStudent = { studentId, displayName };
+// maxScore is the one that applies to this student (their group's, or the
+// assignment's); it is what the grade box counts up to.
+async function selectStudent(studentId, displayName, maxScore) {
+  activeStudent = { studentId, displayName, maxScore };
   activeVersion = null;
   renderStudentPanel();
   await Promise.all([
@@ -1277,7 +1379,7 @@ async function selectStudentProfile(studentId) {
       activeAssignment = assignment;
       await loadAssignments();
       await loadStudentManage();
-      await selectStudent(student.id, studentName(student));
+      await selectStudent(student.id, studentName(student), r.maxScore);
     };
     tbody.appendChild(tr);
   });
