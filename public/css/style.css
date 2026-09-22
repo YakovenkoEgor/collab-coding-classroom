@@ -291,6 +291,17 @@ h3 { font-size: 14px; margin: 0 0 10px 0; color: var(--text-dim); text-transform
 .profile-table td { padding: 4px 0; font-size: 14px; }
 .profile-table td.muted { width: 140px; }
 
+/* --- Per-group deadlines and maximum scores --- */
+.group-rules { margin-top: 6px; }
+.group-rules th, .group-rules td { padding: 6px 8px; }
+.group-rules td:first-child { font-weight: 600; }
+.group-rules input { width: 100%; }
+.group-rules input[type=number] { max-width: 110px; }
+
+.group-rules-summary { margin: 6px 0 10px; font-size: 13px; }
+.group-rules-summary ul { margin: 4px 0 0; padding-left: 18px; }
+.group-rules-summary li { margin-bottom: 2px; }
+
 /* --- The grade a student sees on an open assignment --- */
 .grade-panel {
   border: 1px solid var(--border);
@@ -360,6 +371,37 @@ h3 { font-size: 14px; margin: 0 0 10px 0; color: var(--text-dim); text-transform
   align-items: stretch;
 }
 .editor-layout .editor-wrap { flex: 1; min-width: 0; }
+
+/* A layout the user can drag taller or shorter (see js/ui.js). The height
+   lives on the layout, and the tree and the editor follow it, so both sides
+   stay the same height whatever it is set to. */
+.editor-layout.resizable { height: var(--editor-height, 420px); }
+.editor-layout.resizable .editor-wrap,
+.editor-layout.resizable .file-tree { height: 100%; }
+
+.editor-resizer {
+  height: 12px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel-raised);
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* A drag must not select the text it passes over. */
+  user-select: none;
+  touch-action: none;
+}
+.editor-resizer::after {
+  content: "";
+  width: 46px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.editor-resizer:hover { border-color: var(--accent); }
+.editor-resizer:hover::after { background: var(--accent); }
 
 .file-tree {
   width: 190px;
