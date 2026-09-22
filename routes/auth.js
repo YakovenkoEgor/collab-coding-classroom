@@ -5,6 +5,7 @@ const db = require("../db/database");
 const { requireLogin, requireRole } = require("../middleware/auth");
 const { parseCsv, toCsv } = require("../csv");
 const { withDeadlineState } = require("../deadlines");
+const rules = require("../assignmentRules");
 
 const router = express.Router();
 
@@ -346,8 +347,11 @@ router.get("/users/:id", requireLogin, requireRole("teacher"), (req, res) => {
 
   const assignments = db
     .prepare(
-      `SELECT a.id AS assignmentId, a.title, a.archived, a.deadline,
-              a.max_score AS maxScore,
+      // The deadline and top mark are this student's group's, falling back to
+      // the assignment's own (see assignmentRules.js).
+      `SELECT a.id AS assignmentId, a.title, a.archived,
+              COALESCE(r.deadline, a.deadline) AS deadline,
+              COALESCE(r.max_score, a.max_score) AS maxScore,
               s.version_number AS latestVersion, s.status,
               s.created_at AS lastActivity,
               g.score, g.feedback,
@@ -358,6 +362,7 @@ router.get("/users/:id", requireLogin, requireRole("teacher"), (req, res) => {
                   AND sub.status = 'submitted'
               ) AS hasSubmitted
        FROM assignments a
+       ${rules.RULE_JOIN_FOR_STUDENT}
        LEFT JOIN submissions s
          ON s.assignment_id = a.id
         AND s.id = (
@@ -367,7 +372,7 @@ router.get("/users/:id", requireLogin, requireRole("teacher"), (req, res) => {
        LEFT JOIN grades g ON g.assignment_id = a.id AND g.student_id = ?
        ORDER BY a.created_at DESC`
     )
-    .all(req.params.id, req.params.id, req.params.id);
+    .all(req.params.id, req.params.id, req.params.id, req.params.id);
 
   res.json({ student, assignments: assignments.map(withDeadlineState) });
 });

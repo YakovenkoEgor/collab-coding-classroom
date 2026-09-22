@@ -43,6 +43,10 @@ const counts = {
   assignment_starter_files: db
     .prepare("SELECT COUNT(*) c FROM assignment_starter_files")
     .get().c,
+  assignment_group_rules: db
+    .prepare("SELECT COUNT(*) c FROM assignment_group_rules")
+    .get().c,
+  submission_uploads: db.prepare("SELECT COUNT(*) c FROM submission_uploads").get().c,
 };
 
 const teachers = db.prepare("SELECT COUNT(*) c FROM users WHERE role = 'teacher'").get().c;
@@ -58,8 +62,15 @@ if (!confirmed) {
   process.exit(0);
 }
 
-// Handout files live on disk; collect their names before the rows go away.
-const storedNames = db.prepare("SELECT stored_name FROM assignment_files").all();
+// Handouts and student attachments live on disk; collect their names before
+// the rows go away.
+const storedNames = db
+  .prepare(
+    `SELECT stored_name FROM assignment_files
+     UNION ALL
+     SELECT stored_name FROM submission_uploads`
+  )
+  .all();
 
 // Children before parents - foreign keys are enforced.
 const wipe = db.transaction(() => {
@@ -70,6 +81,8 @@ const wipe = db.transaction(() => {
   db.prepare("DELETE FROM grades").run();
   db.prepare("DELETE FROM assignment_files").run();
   db.prepare("DELETE FROM assignment_starter_files").run();
+  db.prepare("DELETE FROM assignment_group_rules").run();
+  db.prepare("DELETE FROM submission_uploads").run();
   db.prepare("DELETE FROM assignments").run();
   if (allUsers) {
     // grades.graded_by and assignment_files.uploaded_by point at teachers, so
@@ -107,6 +120,8 @@ for (const table of [
   "grades",
   "assignment_files",
   "assignment_starter_files",
+  "assignment_group_rules",
+  "submission_uploads",
 ]) {
   console.log(
     `  ${table.padEnd(26)} ${db.prepare(`SELECT COUNT(*) c FROM ${table}`).get().c}`
