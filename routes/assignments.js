@@ -5,6 +5,7 @@ const storage = require("../storage");
 const { isValidJavaFilename, SandboxError } = require("../sandbox");
 const { withDeadlineState } = require("../deadlines");
 const rules = require("../assignmentRules");
+const projectFiles = require("../projectFiles");
 
 const router = express.Router();
 
@@ -38,7 +39,7 @@ const DEFAULT_STARTER =
 function starterFilesFor(assignmentId) {
   return db
     .prepare(
-      `SELECT filename, content, is_entry AS isEntry
+      `SELECT filename, content, encoding, is_entry AS isEntry
        FROM assignment_starter_files WHERE assignment_id = ?
        ORDER BY is_entry DESC, filename`
     )
@@ -57,13 +58,22 @@ function readStarterProject(body) {
     const files = body.starterFiles.map((f) => ({
       filename: String(f.filename || "").trim(),
       content: typeof f.content === "string" ? f.content : "",
+      encoding: projectFiles.normalizeEncoding(f.encoding),
     }));
 
+    // Sources and data files follow their own name rules; a starter project
+    // may hand out both (an input.txt next to Main.java, say).
     const seen = new Set();
     for (const file of files) {
-      if (!isValidJavaFilename(file.filename)) {
+      if (projectFiles.isJavaFile(file.filename)) {
+        if (!isValidJavaFilename(file.filename)) {
+          throw new SandboxError(
+            `"${file.filename}" is not a valid Java file name (expected something like Main.java)`
+          );
+        }
+      } else if (!projectFiles.isSafeDataFilename(file.filename)) {
         throw new SandboxError(
-          `"${file.filename}" is not a valid Java file name (expected something like Main.java)`
+          `"${file.filename}" is not a usable file name - use letters, digits, dot, dash and underscore, with no folders`
         );
       }
       if (seen.has(file.filename)) {
@@ -72,10 +82,18 @@ function readStarterProject(body) {
       seen.add(file.filename);
     }
 
+    const javaFiles = files.filter((f) => projectFiles.isJavaFile(f.filename));
+    if (javaFiles.length === 0) {
+      throw new SandboxError("A starter project needs at least one .java file");
+    }
+
+    // The entry is what the student's Run starts from, so it has to be a
+    // source file even if the teacher had a data file selected in the form.
+    const chosen = files.find((f) => f.filename === body.starterEntry);
     const entry =
-      body.starterEntry && files.some((f) => f.filename === body.starterEntry)
-        ? body.starterEntry
-        : files[0].filename;
+      chosen && projectFiles.isJavaFile(chosen.filename)
+        ? chosen.filename
+        : javaFiles[0].filename;
     return { files, entry };
   }
 
@@ -389,14 +407,16 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
       rules.replaceRules(info.lastInsertRowid, groupRules);
 
       const insertStarter = db.prepare(
-        `INSERT INTO assignment_starter_files (assignment_id, filename, content, is_entry)
-         VALUES (?, ?, ?, ?)`
+        `INSERT INTO assignment_starter_files
+           (assignment_id, filename, content, encoding, is_entry)
+         VALUES (?, ?, ?, ?, ?)`
       );
       for (const f of starter ? starter.files : []) {
         insertStarter.run(
           info.lastInsertRowid,
           f.filename,
           f.content,
+          projectFiles.normalizeEncoding(f.encoding),
           f.filename === starter.entry ? 1 : 0
         );
       }
@@ -561,14 +581,16 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
         assignment.id
       );
       const insertStarter = db.prepare(
-        `INSERT INTO assignment_starter_files (assignment_id, filename, content, is_entry)
-         VALUES (?, ?, ?, ?)`
+        `INSERT INTO assignment_starter_files
+           (assignment_id, filename, content, encoding, is_entry)
+         VALUES (?, ?, ?, ?, ?)`
       );
       for (const f of starter ? starter.files : []) {
         insertStarter.run(
           assignment.id,
           f.filename,
           f.content,
+          projectFiles.normalizeEncoding(f.encoding),
           f.filename === starter.entry ? 1 : 0
         );
       }
