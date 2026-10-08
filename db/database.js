@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS assignment_starter_files (
   assignment_id INTEGER NOT NULL REFERENCES assignments(id),
   filename      TEXT NOT NULL,
   content       TEXT NOT NULL,
+  encoding      TEXT NOT NULL DEFAULT 'text',
   is_entry      INTEGER NOT NULL DEFAULT 0,
   UNIQUE(assignment_id, filename)
 );
@@ -85,11 +86,15 @@ CREATE TABLE IF NOT EXISTS submission_uploads (
 -- whole project, so every version owns its own full set of rows.
 -- submissions.code still holds the entry file's source, which keeps the older
 -- single-file screens and queries working unchanged.
+-- A project holds Java sources and the data files the program reads and
+-- writes. A text file is stored as it is; anything else (a serialised object,
+-- say) is stored base64 with encoding = 'base64' - see projectFiles.js.
 CREATE TABLE IF NOT EXISTS submission_files (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   submission_id INTEGER NOT NULL REFERENCES submissions(id),
   filename      TEXT NOT NULL,
   content       TEXT NOT NULL,
+  encoding      TEXT NOT NULL DEFAULT 'text',
   is_entry      INTEGER NOT NULL DEFAULT 0,
   UNIQUE(submission_id, filename)
 );
@@ -239,6 +244,16 @@ if (!columnNames("assignments").includes("type")) {
 if (!columnNames("submissions").includes("stdin")) {
   db.exec("ALTER TABLE submissions ADD COLUMN stdin TEXT NOT NULL DEFAULT ''");
   console.log("[db] migrated submissions table: added stdin");
+}
+
+// How a project file's content is stored: 'text' as written, 'base64' for a
+// file that isn't text (a serialised object, for instance). Everything that
+// existed before data files were allowed is Java source, so it is text.
+for (const table of ["submission_files", "assignment_starter_files"]) {
+  if (!columnNames(table).includes("encoding")) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN encoding TEXT NOT NULL DEFAULT 'text'`);
+    console.log(`[db] migrated ${table}: added encoding`);
+  }
 }
 
 // A student-chosen name for a version, so a draft can be found by what it is

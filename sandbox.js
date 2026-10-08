@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const { Limiter, QueueFullError } = require("./queue");
+const projectFiles = require("./projectFiles");
 
 // ---------------------------------------------------------------------
 // Configuration
@@ -28,6 +29,14 @@ const RUN_AS_USER = process.env.SANDBOX_USER || "65534:65534";
 // Open files per container. Comfortably above what a JVM needs (~60) and far
 // below anything that could exhaust the host.
 const NOFILE_LIMIT = process.env.SANDBOX_NOFILE || "256";
+
+// Where a run's working directory is created. It is the one writable mount a
+// program gets, and unlike /tmp inside the container it cannot be given
+// noexec through Docker - a bind mount inherits the mount options of its
+// source on the host instead. Point this at a directory on a filesystem
+// mounted noexec (and the container can no longer execute anything a program
+// drops there); leave it unset for the system temp directory.
+const WORK_BASE = process.env.SANDBOX_WORK_BASE || os.tmpdir();
 
 // Node-side safety-net timeout (a bit longer than the in-container timeout,
 // in case Docker itself hangs, e.g. pulling an image).
@@ -65,8 +74,9 @@ function isDockerUnavailable(stderr) {
   );
 }
 
-function makeTempDir(prefix) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+function makeTempDir(prefix, base = os.tmpdir()) {
+  fs.mkdirSync(base, { recursive: true });
+  return fs.mkdtempSync(path.join(base, prefix));
 }
 
 // Removing the directory can fail right after the container exits: on Windows
@@ -219,12 +229,43 @@ function validateProject(files, entryFilename) {
   if (!Array.isArray(files) || files.length === 0) {
     throw new SandboxError("The project has no files");
   }
+
+  // Sources are compiled; data files are only mounted next to the running
+  // program. The two have different name rules (see projectFiles.js).
+  let dataCount = 0;
+  let dataBytes = 0;
   for (const file of files) {
-    if (!isValidJavaFilename(file.filename)) {
+    if (projectFiles.isJavaFile(file.filename)) {
+      if (!isValidJavaFilename(file.filename)) {
+        throw new SandboxError(
+          `"${file.filename}" is not a valid Java file name (expected something like Main.java)`
+        );
+      }
+      continue;
+    }
+    if (!projectFiles.isSafeDataFilename(file.filename)) {
       throw new SandboxError(
-        `"${file.filename}" is not a valid Java file name (expected something like Main.java)`
+        `"${file.filename}" is not a usable file name - use letters, digits, dot, dash and underscore, with no folders`
       );
     }
+    dataCount += 1;
+    dataBytes += projectFiles.decodeContent(file).length;
+  }
+
+  if (dataCount > projectFiles.MAX_DATA_FILES) {
+    throw new SandboxError(
+      `A project can hold at most ${projectFiles.MAX_DATA_FILES} data files`
+    );
+  }
+  if (dataBytes > projectFiles.MAX_DATA_TOTAL_BYTES) {
+    throw new SandboxError(
+      `The data files add up to more than ${Math.round(
+        projectFiles.MAX_DATA_TOTAL_BYTES / 1024
+      )} KB`
+    );
+  }
+  if (!files.some((f) => projectFiles.isJavaFile(f.filename))) {
+    throw new SandboxError("The project has no Java file to run");
   }
   // Compared case-insensitively on purpose. Linux would happily keep both
   // Main.java and main.java and then fail deep inside javac, while Windows
@@ -246,6 +287,11 @@ function validateProject(files, entryFilename) {
   const entry = files.find((f) => f.filename === entryFilename);
   if (!entry) {
     throw new SandboxError(`Entry file "${entryFilename}" is not part of the project`);
+  }
+  if (!projectFiles.isJavaFile(entry.filename)) {
+    throw new SandboxError(
+      `"${entry.filename}" is a data file - a run has to start from a .java file`
+    );
   }
   return entry;
 }
@@ -299,9 +345,10 @@ async function runJavaProject(files, entryFilename, stdin = "") {
 function prepareProjectDirs(files) {
   const codeDir = makeTempDir("javasandbox-src-");
   const outDir = makeTempDir("javasandbox-out-");
+  const workDir = makeTempDir("javasandbox-work-", WORK_BASE);
 
   fs.chmodSync(codeDir, 0o755);
-  for (const file of files) {
+  for (const file of files.filter((f) => projectFiles.isJavaFile(f.filename))) {
     const target = path.join(codeDir, file.filename);
     fs.writeFileSync(target, file.content ?? "", "utf8");
     fs.chmodSync(target, 0o644);
@@ -310,7 +357,91 @@ function prepareProjectDirs(files) {
   // has to be writable by them too.
   fs.chmodSync(outDir, 0o777);
 
-  return { codeDir, outDir };
+  // The program's working directory. The data files of the project start here,
+  // and the program may read them, rewrite them and create new ones - which is
+  // the whole point of mounting it read-write. 0666 on the files, not 0644:
+  // the container user has to be able to overwrite a file it does not own.
+  fs.chmodSync(workDir, 0o777);
+  for (const file of files.filter((f) => !projectFiles.isJavaFile(f.filename))) {
+    const target = path.join(workDir, file.filename);
+    fs.writeFileSync(target, projectFiles.decodeContent(file));
+    fs.chmodSync(target, 0o666);
+  }
+
+  return { codeDir, outDir, workDir };
+}
+
+// What the program left in its working directory, in the shape the editor
+// uses. This is how a file written during a run gets back into the project -
+// and so into the next run and into the saved version.
+//
+// Anything oversized is left out with a note rather than silently dropped;
+// a runaway loop writing a huge file should not quietly produce a project
+// that behaves differently next time.
+function readWorkDir(workDir) {
+  const files = [];
+  const warnings = [];
+  let total = 0;
+
+  let names;
+  try {
+    names = fs.readdirSync(workDir).sort();
+  } catch (err) {
+    return { files, warnings: [`could not read the working directory: ${err.message}`] };
+  }
+
+  for (const name of names) {
+    if (files.length >= projectFiles.MAX_DATA_FILES) {
+      warnings.push(
+        `only the first ${projectFiles.MAX_DATA_FILES} files were kept - the rest were discarded`
+      );
+      break;
+    }
+
+    const full = path.join(workDir, name);
+    let stat;
+    try {
+      // lstat, not stat: a symlink the program created must not be followed
+      // out of the directory.
+      stat = fs.lstatSync(full);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile()) {
+      warnings.push(`"${name}" is not a regular file and was discarded`);
+      continue;
+    }
+    if (!projectFiles.isSafeDataFilename(name)) {
+      warnings.push(`"${name}" has a name the project cannot store and was discarded`);
+      continue;
+    }
+    if (stat.size > projectFiles.MAX_DATA_FILE_BYTES) {
+      warnings.push(
+        `"${name}" is ${Math.round(stat.size / 1024)} KB, over the ${Math.round(
+          projectFiles.MAX_DATA_FILE_BYTES / 1024
+        )} KB limit, and was discarded`
+      );
+      continue;
+    }
+    if (total + stat.size > projectFiles.MAX_DATA_TOTAL_BYTES) {
+      warnings.push(
+        `the data files went over ${Math.round(
+          projectFiles.MAX_DATA_TOTAL_BYTES / 1024
+        )} KB in total - "${name}" and anything after it were discarded`
+      );
+      break;
+    }
+
+    try {
+      const buffer = fs.readFileSync(full);
+      total += buffer.length;
+      files.push({ filename: name, ...projectFiles.encodeContent(buffer) });
+    } catch (err) {
+      warnings.push(`"${name}" could not be read back: ${err.message}`);
+    }
+  }
+
+  return { files, warnings };
 }
 
 function buildCompileArgs(codeDir, outDir, files, containerName) {
@@ -334,8 +465,11 @@ function buildCompileArgs(codeDir, outDir, files, containerName) {
     String(TIME_LIMIT_SECONDS),
     "javac",
     // Every file is passed explicitly - there's no shell in the container
-    // to expand a wildcard.
-    ...files.map((f) => `/code/${f.filename}`),
+    // to expand a wildcard. Data files are not sources and are not here:
+    // they go to the working directory of the run instead.
+    ...files
+      .filter((f) => projectFiles.isJavaFile(f.filename))
+      .map((f) => `/code/${f.filename}`),
     "-d",
     "/out",
   ];
@@ -347,7 +481,14 @@ function buildCompileArgs(codeDir, outDir, files, containerName) {
 // moment, and what the student types is echoed exactly where they typed it.
 // A host-side TTY (`docker run -it`) is not an option here - the CLI refuses
 // it when its own stdin is a pipe, which it always is under Node.
-function buildRunArgs(outDir, entry, containerName, timeLimitSeconds, { pty = false } = {}) {
+function buildRunArgs(
+  outDir,
+  workDir,
+  entry,
+  containerName,
+  timeLimitSeconds,
+  { pty = false } = {}
+) {
   const javaCommand = [
     "java",
     `-Xmx${JVM_HEAP}`,
@@ -379,6 +520,13 @@ function buildRunArgs(outDir, entry, containerName, timeLimitSeconds, { pty = fa
     "--tmpfs=/tmp:rw,noexec,nosuid,size=32m",
     "-v",
     `${outDir}:/out:ro`,
+    // The program's working directory: the project's data files, writable.
+    // With -w it is also where a relative path lands, so new File("out.txt")
+    // behaves the way it does in an IDE instead of hitting the read-only root.
+    "-v",
+    `${workDir}:/work:rw`,
+    "-w",
+    "/work",
     DOCKER_IMAGE,
     "timeout",
     String(timeLimitSeconds),
@@ -387,7 +535,7 @@ function buildRunArgs(outDir, entry, containerName, timeLimitSeconds, { pty = fa
 }
 
 async function runProjectInSlot(files, entry, stdin) {
-  const { codeDir, outDir } = prepareProjectDirs(files);
+  const { codeDir, outDir, workDir } = prepareProjectDirs(files);
 
   try {
     // ---- Step 1: compile ----
@@ -401,7 +549,7 @@ async function runProjectInSlot(files, entry, stdin) {
 
     // ---- Step 2: run ----
     const runName = `jc-run-${crypto.randomBytes(8).toString("hex")}`;
-    const runArgs = buildRunArgs(outDir, entry, runName, TIME_LIMIT_SECONDS);
+    const runArgs = buildRunArgs(outDir, workDir, entry, runName, TIME_LIMIT_SECONDS);
 
     const runResult = await runDocker(runArgs, stdin, runName);
 
@@ -417,12 +565,17 @@ async function runProjectInSlot(files, entry, stdin) {
       };
     }
 
+    // Files the program wrote - collected even when it crashed or ran out of
+    // time, because a half-written file is often exactly what explains why.
+    const work = readWorkDir(workDir);
+
     if (runResult.timedOut) {
       return {
         stdout: runResult.stdout,
         stderr: "Time limit exceeded.",
         compileOutput: "",
         status: "Time Limit Exceeded",
+        ...work,
       };
     }
 
@@ -432,6 +585,7 @@ async function runProjectInSlot(files, entry, stdin) {
         stderr: runResult.stderr || `Process exited with code ${runResult.exitCode}`,
         compileOutput: "",
         status: "Runtime Error",
+        ...work,
       };
     }
 
@@ -440,10 +594,12 @@ async function runProjectInSlot(files, entry, stdin) {
       stderr: runResult.stderr,
       compileOutput: "",
       status: "Accepted",
+      ...work,
     };
   } finally {
     cleanupDir(codeDir);
     cleanupDir(outDir);
+    cleanupDir(workDir);
   }
 }
 
@@ -524,16 +680,21 @@ class InteractiveSession extends EventEmitter {
         // already gone
       }
     }
+    // Read what the program left behind before the directory goes away: this
+    // is the only chance to get a file it wrote back into the project.
+    let work = { files: [], warnings: [] };
     if (this.dirs) {
+      work = readWorkDir(this.dirs.workDir);
       cleanupDir(this.dirs.codeDir);
       cleanupDir(this.dirs.outDir);
+      cleanupDir(this.dirs.workDir);
       this.dirs = null;
     }
     if (this.release) {
       this.release();
       this.release = null;
     }
-    this.emit("exit", { reason });
+    this.emit("exit", { reason, files: work.files, warnings: work.warnings });
   }
 }
 
@@ -544,7 +705,7 @@ async function startInteractiveRun(files, entryFilename) {
   const entry = validateProject(files, entryFilename);
 
   // Compilation is a short CPU burst - it belongs in the regular pool.
-  const { codeDir, outDir } = prepareProjectDirs(files);
+  const { codeDir, outDir, workDir } = prepareProjectDirs(files);
   const compileName = `jc-build-${crypto.randomBytes(8).toString("hex")}`;
   const compileResult = await limiter.run(() =>
     runDocker(buildCompileArgs(codeDir, outDir, files, compileName), undefined, compileName)
@@ -554,11 +715,12 @@ async function startInteractiveRun(files, entryFilename) {
   if (failure) {
     cleanupDir(codeDir);
     cleanupDir(outDir);
+    cleanupDir(workDir);
     return { ok: false, result: failure };
   }
 
   const session = new InteractiveSession();
-  session.dirs = { codeDir, outDir };
+  session.dirs = { codeDir, outDir, workDir };
 
   // The run holds an interactive slot until the program ends.
   try {
@@ -566,11 +728,13 @@ async function startInteractiveRun(files, entryFilename) {
   } catch (err) {
     cleanupDir(codeDir);
     cleanupDir(outDir);
+    cleanupDir(workDir);
     throw err;
   }
 
   const args = buildRunArgs(
     outDir,
+    workDir,
     entry,
     session.containerName,
     INTERACTIVE_MAX_SECONDS,
@@ -638,6 +802,12 @@ module.exports = {
   SandboxError,
   QueueFullError,
   isValidJavaFilename,
+  validateProject,
+  readWorkDir,
+  // Exposed so the container setup can be inspected without starting Docker -
+  // which mounts a run gets and how the project is laid out on disk.
+  prepareProjectDirs,
+  buildRunArgs,
   INTERACTIVE_IDLE_SECONDS,
   INTERACTIVE_MAX_SECONDS,
   // For monitoring: how busy the sandbox is right now.

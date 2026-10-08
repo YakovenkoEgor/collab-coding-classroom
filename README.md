@@ -103,6 +103,14 @@ Visit http://localhost:3000
    done; **Submit** to mark a version as your submission for grading.
 4. Every save creates a new version — nothing is overwritten, so you and
    your teacher can always look back at earlier attempts.
+5. A project can also hold data files, for labs about reading and writing
+   files. **+ New file** creates one (`input.txt`, or a name with no
+   extension at all); **+ Add local file** takes one off your own
+   computer. They sit in the program's working directory, so
+   `new File("input.txt")` finds them. Anything the program writes comes
+   back into the tree when the run ends — including a serialised object,
+   which shows up as a binary file you can download but not edit — and is
+   saved with the version, so the next run can read it back.
 5. Use the discussion box to ask questions. Whichever version is currently
    loaded in your editor gets linked to your next message automatically,
    so your teacher can jump straight to the code you're asking about.
@@ -111,10 +119,16 @@ Visit http://localhost:3000
 
 - **No automated test cases** — by design, per your requirements. Grading
   is fully manual.
-- **Single Java class per submission** — the current editor assumes one
-  file (`Main.java`). Multi-file submissions would need changes to both
-  the editor and `sandbox.js` (which currently always compiles a single
-  `Main.java`).
+- **The program's working directory is writable and not `noexec`** — it
+  is a bind mount, and Docker cannot add `noexec` to one; a bind mount
+  takes the options of its source on the host. A program could therefore
+  write a binary into its own working directory and execute it, still as
+  an unprivileged user with no network. To close that off, point
+  `SANDBOX_WORK_BASE` at a directory on a filesystem mounted `noexec`.
+- **Data files are capped deliberately** — a project may hold up to 15
+  data files, 256 KB each and 1 MB in total (`projectFiles.js`). A
+  program that writes more than that has its extra files dropped, with a
+  note in the console. Fine for labs about streams; not a file store.
 - **Student accounts are teacher-created only** — no self-signup, no
   password reset flow. For a small class this is usually fine; you might
   want to add a "reset password" feature if it becomes a pain.
@@ -122,7 +136,9 @@ Visit http://localhost:3000
   arrived unless they check the app.
 - **Sandbox isolation is deliberately proportionate, not maximal** — this
   is a container-level sandbox (no network, memory/CPU/process limits,
-  read-only filesystem), which is solid protection against the realistic
+  read-only filesystem apart from the project's own working directory,
+  which is mounted read-write at `/work`), which is solid protection
+  against the realistic
   risks in a small trusted classroom (infinite loops, memory leaks, fork
   bombs, reading other students' files). It is intentionally simpler than
   a hardened multi-tenant judge like Judge0 (no seccomp syscall

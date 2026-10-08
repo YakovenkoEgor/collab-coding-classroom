@@ -276,7 +276,14 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
           <div class="file-tree wide" style="height:260px">
             <div class="file-tree-header">Files</div>
             <div id="starter-file-list"></div>
-            <button class="secondary" id="starter-new-file-btn" type="button">+ New file</button>
+            <div class="file-tree-actions">
+              <button class="secondary" id="starter-new-file-btn" type="button">+ New file</button>
+              <button class="secondary" id="starter-add-local-btn" type="button"
+                      title="Взять файл с этого компьютера и выдать его вместе с заданием">
+                + Add local file
+              </button>
+            </div>
+            <input type="file" id="starter-local-file-input" multiple hidden>
           </div>
           <textarea id="a-starter" style="font-family: var(--font-mono); flex:1; height:260px; resize:vertical"></textarea>
         </div>
@@ -348,6 +355,7 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
     starterFiles = (existing.starterFiles || []).map((f) => ({
       filename: f.filename,
       content: f.content,
+      encoding: f.encoding === "base64" ? "base64" : "text",
     }));
     if (starterFiles.length === 0) {
       starterFiles = [{ filename: "Main.java", content: DEFAULT_STARTER }];
@@ -366,6 +374,8 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
     (starterFiles.find((f) => f.filename === starterActive) || starterFiles[0]).content;
   document.getElementById("a-starter").addEventListener("input", syncStarterTextarea);
   document.getElementById("starter-new-file-btn").onclick = addStarterFile;
+  document.getElementById("starter-add-local-btn").onclick = addLocalStarterFile;
+  document.getElementById("starter-local-file-input").onchange = onStarterLocalFilesChosen;
   renderStarterTree();
 
   document.getElementById("create-assignment-btn").onclick = async () => {
@@ -453,6 +463,92 @@ const JAVA_FILENAME = /^[A-Za-z_][A-Za-z0-9_]*\.java$/;
 const DEFAULT_STARTER =
   "public class Main {\n    public static void main(String[] args) {\n        \n    }\n}\n";
 
+// Data files in a project, mirrored from projectFiles.js. A starter project
+// may hand out the data a program is meant to read - an input.txt next to
+// Main.java - and the student's own saved versions may contain data files the
+// program wrote, binary ones included.
+const DATA_FILENAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
+const DATA_EXTENSIONS = [
+  "txt", "text", "log", "md", "markdown",
+  "csv", "tsv", "psv", "tab",
+  "dat", "data", "in", "inp", "out", "rec", "asc",
+  "json", "xml", "yaml", "yml",
+  "ini", "cfg", "conf", "config", "properties", "props", "env",
+  "lst", "list",
+];
+const MAX_DATA_FILE_KB = 256;
+
+function isJavaFile(filename) {
+  return /\.java$/i.test(String(filename || ""));
+}
+
+function isBinaryFile(file) {
+  return !!file && file.encoding === "base64";
+}
+
+function isAllowedDataName(filename) {
+  if (!DATA_FILENAME.test(filename)) return false;
+  const dot = filename.lastIndexOf(".");
+  const ext = dot <= 0 ? "" : filename.slice(dot + 1).toLowerCase();
+  return ext === "" || DATA_EXTENSIONS.includes(ext);
+}
+
+function dataNameMessage(filename) {
+  return (
+    `"${filename}" нельзя добавить в проект.\n\n` +
+    "Имя: буквы, цифры, точка, дефис и подчёркивание, без папок.\n" +
+    "Расширение: любой текстовый формат данных — " +
+    DATA_EXTENSIONS.join(", ") +
+    " — либо файл вообще без расширения."
+  );
+}
+
+function fileSizeOf(file) {
+  if (isBinaryFile(file)) {
+    const text = file.content || "";
+    const padding = (text.match(/=+$/) || [""])[0].length;
+    return Math.max(0, Math.floor((text.length * 3) / 4) - padding);
+  }
+  return new TextEncoder().encode(file.content || "").length;
+}
+
+// Hands a project file to the browser as a download - the only way to look at
+// a serialised object a student's program produced.
+function downloadProjectFile(file) {
+  const bytes = isBinaryFile(file)
+    ? Uint8Array.from(atob(file.content || ""), (c) => c.charCodeAt(0))
+    : new TextEncoder().encode(file.content || "");
+  const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = file.filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+// A small "data"/"bin" tag plus a download button, shared by the starter tree
+// and the review viewer.
+function appendDataControls(div, file) {
+  const badge = document.createElement("span");
+  badge.className = "data-badge" + (isBinaryFile(file) ? " binary" : "");
+  badge.textContent = isBinaryFile(file) ? "bin" : "data";
+  badge.title = `${file.filename} — ${formatSize(fileSizeOf(file))}${
+    isBinaryFile(file) ? ", двоичный файл" : ""
+  }`;
+  div.appendChild(badge);
+
+  const download = document.createElement("button");
+  download.className = "download-file";
+  download.type = "button";
+  download.textContent = "↓";
+  download.title = "Скачать файл";
+  download.onclick = (e) => {
+    e.stopPropagation();
+    downloadProjectFile(file);
+  };
+  div.appendChild(download);
+}
+
 // The textarea holds whichever starter file is selected, so its text has to be
 // written back before the selection changes or the form is submitted.
 function syncStarterTextarea() {
@@ -486,6 +582,8 @@ function renderStarterTree() {
     name.onclick = () => openStarterFile(file.filename);
     div.appendChild(name);
 
+    if (!isJavaFile(file.filename)) appendDataControls(div, file);
+
     if (file.filename === starterEntry) {
       const badge = document.createElement("span");
       badge.className = "entry-badge";
@@ -494,18 +592,21 @@ function renderStarterTree() {
       div.appendChild(badge);
     } else {
       // Unlike the student's editor, the entry file here is chosen explicitly -
-      // the teacher is authoring the project, not running it.
-      const setEntry = document.createElement("button");
-      setEntry.className = "set-entry";
-      setEntry.type = "button";
-      setEntry.textContent = "set main";
-      setEntry.title = "Make this the file the student's Run starts from";
-      setEntry.onclick = (e) => {
-        e.stopPropagation();
-        starterEntry = file.filename;
-        renderStarterTree();
-      };
-      div.appendChild(setEntry);
+      // the teacher is authoring the project, not running it. Only a source
+      // file can be the entry point.
+      if (isJavaFile(file.filename)) {
+        const setEntry = document.createElement("button");
+        setEntry.className = "set-entry";
+        setEntry.type = "button";
+        setEntry.textContent = "set main";
+        setEntry.title = "Make this the file the student's Run starts from";
+        setEntry.onclick = (e) => {
+          e.stopPropagation();
+          starterEntry = file.filename;
+          renderStarterTree();
+        };
+        div.appendChild(setEntry);
+      }
 
       const del = document.createElement("button");
       del.className = "delete-file";
@@ -524,14 +625,23 @@ function renderStarterTree() {
 }
 
 function addStarterFile() {
-  const raw = prompt("New file name (e.g. Helper.java):", "Helper.java");
+  const raw = prompt(
+    "New file name — Helper.java for code, input.txt for data:",
+    "Helper.java"
+  );
   if (!raw) return;
-  const filename = raw.trim().endsWith(".java") ? raw.trim() : `${raw.trim()}.java`;
+  const filename = raw.trim();
+  if (!filename) return;
 
-  if (!JAVA_FILENAME.test(filename)) {
+  const isJava = isJavaFile(filename);
+  if (isJava && !JAVA_FILENAME.test(filename)) {
     alert(
       "A Java file name must start with a letter or underscore, contain only letters, digits and underscores, and end with .java — for example Helper.java"
     );
+    return;
+  }
+  if (!isJava && !isAllowedDataName(filename)) {
+    alert(dataNameMessage(filename));
     return;
   }
   if (starterFiles.some((f) => f.filename === filename)) {
@@ -539,10 +649,78 @@ function addStarterFile() {
     return;
   }
 
-  const className = filename.replace(/\.java$/, "");
   syncStarterTextarea();
-  starterFiles.push({ filename, content: `public class ${className} {\n    \n}\n` });
+  starterFiles.push({
+    filename,
+    content: isJava
+      ? `public class ${filename.replace(/\.java$/, "")} {\n    \n}\n`
+      : "",
+    encoding: "text",
+  });
   openStarterFile(filename);
+}
+
+// "Add local file" in the assignment form: hands out data with the task -
+// the input.txt a student's program is supposed to read.
+function addLocalStarterFile() {
+  const picker = document.getElementById("starter-local-file-input");
+  if (picker) picker.click();
+}
+
+async function onStarterLocalFilesChosen(event) {
+  const chosen = Array.from(event.target.files || []);
+  event.target.value = "";
+  if (chosen.length === 0) return;
+
+  syncStarterTextarea();
+  let lastAdded = null;
+
+  for (const file of chosen) {
+    const filename = file.name;
+    if (isJavaFile(filename)) {
+      if (!JAVA_FILENAME.test(filename)) {
+        alert(`"${filename}" — недопустимое имя для файла Java.`);
+        continue;
+      }
+    } else if (!isAllowedDataName(filename)) {
+      alert(dataNameMessage(filename));
+      continue;
+    }
+    if (file.size > MAX_DATA_FILE_KB * 1024) {
+      alert(
+        `"${filename}" — ${formatSize(file.size)}, это больше ${MAX_DATA_FILE_KB} КБ.`
+      );
+      continue;
+    }
+
+    let text;
+    try {
+      text = await file.text();
+    } catch (err) {
+      alert(`Не удалось прочитать "${filename}": ${err.message}`);
+      continue;
+    }
+    if (text.includes("�")) {
+      alert(
+        `"${filename}" не является текстовым файлом. В стартовый проект можно ` +
+          "положить только текстовые данные."
+      );
+      continue;
+    }
+
+    const existing = starterFiles.find((f) => f.filename === filename);
+    if (existing) {
+      if (!confirm(`"${filename}" уже есть в стартовом проекте. Заменить?`)) continue;
+      existing.content = text;
+      existing.encoding = "text";
+    } else {
+      starterFiles.push({ filename, content: text, encoding: "text" });
+    }
+    lastAdded = filename;
+  }
+
+  if (lastAdded) openStarterFile(lastAdded);
+  else renderStarterTree();
 }
 
 function removeStarterFile(filename) {
@@ -896,6 +1074,7 @@ function renderStudentPanel() {
                         <div id="file-list"><p class="muted" style="font-size:12px">—</p></div>
                       </div>
                       <div class="editor-wrap" id="editor-container"></div>
+                      <div class="binary-note" id="binary-note" hidden></div>
                     </div>
                     <div id="stdin-used"></div>
                     <div class="output-panel" id="output-panel">Select a version to view its output.</div>`
@@ -1041,7 +1220,31 @@ function showFile(filename) {
   const file = viewerFiles.find((f) => f.filename === filename) || viewerFiles[0];
   if (!file) return;
   viewerFile = file.filename;
-  viewerEditor.setValue(file.content);
+
+  // A data file the student's program produced may be binary (a serialised
+  // object), and there is nothing to read in it - offer the download instead.
+  const wrap = document.getElementById("editor-container");
+  const note = document.getElementById("binary-note");
+  if (wrap && note) {
+    if (isBinaryFile(file)) {
+      wrap.hidden = true;
+      note.hidden = false;
+      note.innerHTML = `<strong>${escapeHtml(file.filename)}</strong> — двоичный файл,
+        ${formatSize(fileSizeOf(file))}. Показать как текст нечего;
+        скачайте его кнопкой «↓» в дереве проекта.`;
+    } else {
+      note.hidden = true;
+      wrap.hidden = false;
+      viewerEditor.setValue(file.content);
+      const model = viewerEditor.getModel();
+      if (model) {
+        monaco.editor.setModelLanguage(
+          model,
+          isJavaFile(file.filename) ? "java" : "plaintext"
+        );
+      }
+    }
+  }
   renderViewerTree();
 }
 
@@ -1057,6 +1260,7 @@ function renderViewerTree() {
     name.textContent = file.filename;
     name.title = file.filename; // full name stays readable when ellipsized
     div.appendChild(name);
+    if (!isJavaFile(file.filename)) appendDataControls(div, file);
     // Shows which file the student ran, so the reviewer starts in the right place.
     if (file.isEntry) {
       const badge = document.createElement("span");
