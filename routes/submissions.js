@@ -7,6 +7,7 @@ const {
   SandboxError,
   QueueFullError,
 } = require("../sandbox");
+const projectFiles = require("../projectFiles");
 
 const router = express.Router();
 
@@ -32,6 +33,8 @@ function readProject(body) {
     const files = body.files.map((f) => ({
       filename: String(f.filename || "").trim(),
       content: typeof f.content === "string" ? f.content : "",
+      // Data files that aren't text travel base64; sources are always text.
+      encoding: projectFiles.normalizeEncoding(f.encoding),
     }));
     const entry =
       body.entry && files.some((f) => f.filename === body.entry)
@@ -41,7 +44,10 @@ function readProject(body) {
   }
 
   if (typeof body.code === "string" && body.code.length > 0) {
-    return { files: [{ filename: "Main.java", content: body.code }], entry: "Main.java" };
+    return {
+      files: [{ filename: "Main.java", content: body.code, encoding: "text" }],
+      entry: "Main.java",
+    };
   }
 
   throw new SandboxError("No code to run");
@@ -50,7 +56,7 @@ function readProject(body) {
 function filesForSubmission(submissionId) {
   return db
     .prepare(
-      `SELECT filename, content, is_entry AS isEntry
+      `SELECT filename, content, encoding, is_entry AS isEntry
        FROM submission_files WHERE submission_id = ? ORDER BY is_entry DESC, filename`
     )
     .all(submissionId);
@@ -123,8 +129,10 @@ router.post("/interactive", requireLogin, requireRole("student"), async (req, re
     liveSessions.set(session.id, entry);
 
     session.on("output", (text) => entry.buffer.push({ type: "output", text }));
-    session.on("exit", ({ reason }) => {
-      entry.buffer.push({ type: "exit", text: reason });
+    // The exit event carries the data files as the program left them, so the
+    // editor can take back anything it wrote (see sandbox.readWorkDir).
+    session.on("exit", ({ reason, files, warnings }) => {
+      entry.buffer.push({ type: "exit", text: reason, files, warnings });
       // Give a late-connecting client a moment to read the tail.
       setTimeout(() => liveSessions.delete(session.id), 60_000);
     });
@@ -156,8 +164,8 @@ router.get("/interactive/:sessionId/stream", requireLogin, (req, res) => {
   if (entry.session.finished) return res.end();
 
   const onOutput = (text) => send({ type: "output", text });
-  const onExit = ({ reason }) => {
-    send({ type: "exit", text: reason });
+  const onExit = ({ reason, files, warnings }) => {
+    send({ type: "exit", text: reason, files, warnings });
     res.end();
   };
 
@@ -383,14 +391,16 @@ router.post(
         );
 
       const insertFile = db.prepare(
-        `INSERT INTO submission_files (submission_id, filename, content, is_entry)
-         VALUES (?, ?, ?, ?)`
+        `INSERT INTO submission_files
+           (submission_id, filename, content, encoding, is_entry)
+         VALUES (?, ?, ?, ?, ?)`
       );
       for (const file of project.files) {
         insertFile.run(
           info.lastInsertRowid,
           file.filename,
           file.content,
+          projectFiles.normalizeEncoding(file.encoding),
           file.filename === project.entry ? 1 : 0
         );
       }

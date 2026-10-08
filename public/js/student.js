@@ -8,7 +8,8 @@ let uploadedFiles = []; // free-form assignments: the student's attachments
 let runStream = null; // EventSource carrying a running program's output
 let runSessionId = null; // id of that program, while it lives
 let typedThisRun = []; // lines the student typed into the console this run
-let activeFile = null; // file open in the editor; Run starts from this one
+let activeFile = null; // file shown in the editor (source or data file)
+let entryJavaFile = null; // the .java file Run starts from
 let editor = null;
 let editorReady = null; // promise
 let selectedVersionForMessage = null;
@@ -114,9 +115,17 @@ function renderWorkCard() {
                <div class="file-tree">
                  <div class="file-tree-header">Project</div>
                  <div id="file-list"></div>
-                 <button class="secondary" id="new-file-btn">+ New file</button>
+                 <div class="file-tree-actions">
+                   <button class="secondary" id="new-file-btn">+ New file</button>
+                   <button class="secondary" id="add-local-file-btn"
+                           title="Взять файл с этого компьютера и положить в проект">
+                     + Add local file
+                   </button>
+                 </div>
+                 <input type="file" id="local-file-input" multiple hidden>
                </div>
                <div class="editor-wrap" id="editor-container"></div>
+               <div class="binary-note" id="binary-note" hidden></div>
              </div>
              <div id="entry-hint" class="muted"></div>`
       }
@@ -320,6 +329,8 @@ async function renderMainPanel() {
   if (type === "code") {
     await setupEditor();
     document.getElementById("new-file-btn").onclick = addFile;
+    document.getElementById("add-local-file-btn").onclick = addLocalFile;
+    document.getElementById("local-file-input").onchange = onLocalFilesChosen;
     document.getElementById("run-btn").onclick = runCode;
 
     const line = document.getElementById("console-line");
@@ -365,13 +376,18 @@ async function setupEditor() {
   try {
     const starter = await api(`/api/assignments/${activeAssignment.id}/starter`);
     projectFiles = starter.files.length
-      ? starter.files.map((f) => ({ filename: f.filename, content: f.content }))
-      : [{ filename: "Main.java", content: fallback }];
-    activeFile = starter.entry || projectFiles[0].filename;
+      ? starter.files.map((f) => ({
+          filename: f.filename,
+          content: f.content,
+          encoding: f.encoding === "base64" ? "base64" : "text",
+        }))
+      : [{ filename: "Main.java", content: fallback, encoding: "text" }];
+    entryJavaFile = starter.entry || null;
   } catch {
-    projectFiles = [{ filename: "Main.java", content: fallback }];
-    activeFile = "Main.java";
+    projectFiles = [{ filename: "Main.java", content: fallback, encoding: "text" }];
+    entryJavaFile = "Main.java";
   }
+  activeFile = entryFile() || projectFiles[0].filename;
 
   editor = monaco.editor.create(container, {
     value: currentFile().content,
@@ -383,6 +399,7 @@ async function setupEditor() {
   });
   // The grip under the editor; Monaco's automaticLayout follows the height.
   makeEditorResizable(document.getElementById("editor-layout"));
+  applyEditorToActiveFile();
   renderFileTree();
 }
 
@@ -563,22 +580,81 @@ async function deleteUpload(file) {
 
 const JAVA_FILENAME = /^[A-Za-z_][A-Za-z0-9_]*\.java$/;
 
+// Data files in a project, mirrored from projectFiles.js. These are the names
+// a person may add by hand; a file the student's own program writes keeps
+// whatever name it chose.
+const DATA_FILENAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
+const DATA_EXTENSIONS = [
+  "txt", "text", "log", "md", "markdown",
+  "csv", "tsv", "psv", "tab",
+  "dat", "data", "in", "inp", "out", "rec", "asc",
+  "json", "xml", "yaml", "yml",
+  "ini", "cfg", "conf", "config", "properties", "props", "env",
+  "lst", "list",
+];
+const MAX_DATA_FILE_KB = 256;
+
+function isJavaFile(filename) {
+  return /\.java$/i.test(String(filename || ""));
+}
+
+function isBinaryFile(file) {
+  return !!file && file.encoding === "base64";
+}
+
+function fileExtension(filename) {
+  const dot = String(filename || "").lastIndexOf(".");
+  return dot <= 0 ? "" : String(filename).slice(dot + 1).toLowerCase();
+}
+
+// A name a student is allowed to type or upload: a text data format, or no
+// extension at all.
+function isAllowedDataName(filename) {
+  if (!DATA_FILENAME.test(filename)) return false;
+  const ext = fileExtension(filename);
+  return ext === "" || DATA_EXTENSIONS.includes(ext);
+}
+
+// Size of a file as stored, for the tree.
+function fileSize(file) {
+  if (isBinaryFile(file)) {
+    // Base64 carries 3 bytes in every 4 characters.
+    const text = file.content || "";
+    const padding = (text.match(/=+$/) || [""])[0].length;
+    return Math.max(0, Math.floor((text.length * 3) / 4) - padding);
+  }
+  return new TextEncoder().encode(file.content || "").length;
+}
+
 function currentFile() {
   return projectFiles.find((f) => f.filename === activeFile) || projectFiles[0];
 }
 
+// Which file a Run starts from. Data files can be opened in the editor like
+// anything else, but a run has to begin at a class with main().
+function entryFile() {
+  if (entryJavaFile && projectFiles.some((f) => f.filename === entryJavaFile)) {
+    return entryJavaFile;
+  }
+  const firstJava = projectFiles.find((f) => isJavaFile(f.filename));
+  return firstJava ? firstJava.filename : null;
+}
+
 // The editor is the single source of truth while a file is open, so its text
-// has to be written back before anything reads the project.
+// has to be written back before anything reads the project. A binary file is
+// never in the editor, so there is nothing to write back for it.
 function syncEditorToFile() {
   if (!editor) return;
   const file = currentFile();
-  if (file) file.content = editor.getValue();
+  if (file && !isBinaryFile(file)) file.content = editor.getValue();
 }
 
 function renderFileTree() {
   const list = document.getElementById("file-list");
   if (!list) return;
   list.innerHTML = "";
+
+  const entry = entryFile();
 
   projectFiles.forEach((file) => {
     const div = document.createElement("div");
@@ -587,12 +663,40 @@ function renderFileTree() {
     const name = document.createElement("span");
     name.className = "file-node-name";
     name.textContent = file.filename;
-    name.title = file.filename; // full name stays readable when ellipsized
+    // Data files show their size: the point of them is the content, and a
+    // zero-byte result is the usual first symptom of a stream bug.
+    name.title = isJavaFile(file.filename)
+      ? file.filename
+      : `${file.filename} — ${formatSize(fileSize(file))}${
+          isBinaryFile(file) ? ", двоичный файл" : ""
+        }`;
     name.onclick = () => openFile(file.filename);
     div.appendChild(name);
 
-    // The open file is the one Run starts from - mark it the way an IDE does.
-    if (file.filename === activeFile) {
+    if (!isJavaFile(file.filename)) {
+      const badge = document.createElement("span");
+      badge.className = "data-badge" + (isBinaryFile(file) ? " binary" : "");
+      badge.textContent = isBinaryFile(file) ? "bin" : "data";
+      badge.title = isBinaryFile(file)
+        ? "Двоичный файл — открыть в редакторе нельзя, можно скачать"
+        : "Файл данных — программа может читать и перезаписывать его";
+      div.appendChild(badge);
+
+      // The only way to look at a serialised object, and the quickest way to
+      // check a result file.
+      const download = document.createElement("button");
+      download.className = "download-file";
+      download.textContent = "↓";
+      download.title = "Скачать файл";
+      download.onclick = (e) => {
+        e.stopPropagation();
+        downloadProjectFile(file);
+      };
+      div.appendChild(download);
+    }
+
+    // The .java file a Run starts from - marked the way an IDE does.
+    if (file.filename === entry) {
       const badge = document.createElement("span");
       badge.className = "entry-badge";
       badge.textContent = "main";
@@ -615,29 +719,105 @@ function renderFileTree() {
 
   const newBtn = document.getElementById("new-file-btn");
   if (newBtn) newBtn.disabled = !isEditable();
+  const addLocalBtn = document.getElementById("add-local-file-btn");
+  if (addLocalBtn) addLocalBtn.disabled = !isEditable();
 
   const hint = document.getElementById("entry-hint");
-  if (hint) hint.textContent = `▶ Run compiles every file and starts from ${activeFile}`;
+  if (hint) {
+    // The example names a real text file from the project when there is one -
+    // a binary file makes a poor illustration of a path.
+    const example =
+      (projectFiles.find((f) => !isJavaFile(f.filename) && !isBinaryFile(f)) || {})
+        .filename || "data.txt";
+    hint.textContent = entry
+      ? `▶ Run compiles every .java file and starts from ${entry}. Файлы данных лежат рядом с программой: new File("${example}") — это относительный путь.`
+      : "▶ Add a .java file to run the project";
+  }
 }
 
+// Shows a file in the editor. Opening a .java file also makes it the entry
+// point; opening a data file does not - it is data, not a program.
 function openFile(filename) {
   syncEditorToFile();
   activeFile = filename;
   const file = currentFile();
-  editor.setValue(file ? file.content : "");
+  if (file && isJavaFile(file.filename)) entryJavaFile = file.filename;
+  applyEditorToActiveFile();
   renderFileTree();
 }
 
+// Puts the open file in front of the student: text in Monaco, a binary file
+// as a note where the editor would be (nothing sensible to show, and letting
+// it be edited would corrupt it).
+function applyEditorToActiveFile() {
+  const file = currentFile();
+  const wrap = document.getElementById("editor-container");
+  const note = document.getElementById("binary-note");
+  if (!wrap || !note) return;
+
+  if (file && isBinaryFile(file)) {
+    wrap.hidden = true;
+    note.hidden = false;
+    note.innerHTML = `<strong>${escapeHtml(file.filename)}</strong> — двоичный файл,
+      ${formatSize(fileSize(file))}.<br>
+      Его нельзя показать как текст: он таким и не является (например, это
+      сериализованный объект). Программа читает и перезаписывает его как
+      обычно, а посмотреть содержимое можно, скачав файл кнопкой «↓» в дереве
+      проекта.`;
+    return;
+  }
+
+  note.hidden = true;
+  wrap.hidden = false;
+  if (!editor) return;
+  editor.setValue(file ? file.content : "");
+  // Java gets Java highlighting; a data file is plain text.
+  const model = editor.getModel();
+  if (model) {
+    monaco.editor.setModelLanguage(
+      model,
+      file && isJavaFile(file.filename) ? "java" : "plaintext"
+    );
+  }
+  editor.updateOptions({ readOnly: !isEditable() });
+}
+
+// Hands the file to the browser as a download, straight from what the editor
+// already has - no round trip to the server.
+function downloadProjectFile(file) {
+  const bytes = isBinaryFile(file)
+    ? Uint8Array.from(atob(file.content || ""), (c) => c.charCodeAt(0))
+    : new TextEncoder().encode(file.content || "");
+  const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = file.filename;
+  link.click();
+  // Give the browser a moment to start the download before dropping the blob.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+// A new file typed by hand. A name ending in .java gets a class skeleton;
+// anything else is treated as a data file and starts out empty.
 function addFile() {
   if (!isEditable()) return;
-  const raw = prompt("New file name (e.g. Helper.java):", "Helper.java");
+  const raw = prompt(
+    "New file name — Helper.java for code, input.txt for data:",
+    "Helper.java"
+  );
   if (!raw) return;
-  const filename = raw.trim().endsWith(".java") ? raw.trim() : `${raw.trim()}.java`;
+  const filename = raw.trim();
+  if (!filename) return;
 
-  if (!JAVA_FILENAME.test(filename)) {
+  const isJava = isJavaFile(filename);
+  if (isJava && !JAVA_FILENAME.test(filename)) {
     alert(
       "A Java file name must start with a letter or underscore, contain only letters, digits and underscores, and end with .java — for example Helper.java"
     );
+    return;
+  }
+  if (!isJava && !isAllowedDataName(filename)) {
+    alert(dataNameMessage(filename));
     return;
   }
   if (projectFiles.some((f) => f.filename === filename)) {
@@ -645,13 +825,97 @@ function addFile() {
     return;
   }
 
-  const className = filename.replace(/\.java$/, "");
   syncEditorToFile();
   projectFiles.push({
     filename,
-    content: `public class ${className} {\n    \n}\n`,
+    content: isJava
+      ? `public class ${filename.replace(/\.java$/, "")} {\n    \n}\n`
+      : "",
+    encoding: "text",
   });
   openFile(filename);
+}
+
+function dataNameMessage(filename) {
+  return (
+    `"${filename}" нельзя добавить в проект.\n\n` +
+    "Имя: буквы, цифры, точка, дефис и подчёркивание, без папок.\n" +
+    "Расширение: любой текстовый формат данных — " +
+    DATA_EXTENSIONS.join(", ") +
+    " — либо файл вообще без расширения.\n\n" +
+    "Архивы, программы и документы Word/Excel сюда не кладутся: программа " +
+    "должна читать данные как текст. Двоичные файлы в проекте появляются " +
+    "только тогда, когда их создаёт сама программа."
+  );
+}
+
+// "Add local file": picks a file off the student's own computer and puts it
+// into the project, so a program can read real data. Text only - see
+// dataNameMessage for why.
+function addLocalFile() {
+  if (!isEditable()) return;
+  const picker = document.getElementById("local-file-input");
+  if (picker) picker.click();
+}
+
+async function onLocalFilesChosen(event) {
+  const chosen = Array.from(event.target.files || []);
+  event.target.value = ""; // picking the same file twice must fire again
+  if (chosen.length === 0) return;
+  if (!isEditable()) return;
+
+  syncEditorToFile();
+  let lastAdded = null;
+
+  for (const file of chosen) {
+    const filename = file.name;
+    if (isJavaFile(filename)) {
+      if (!JAVA_FILENAME.test(filename)) {
+        alert(`"${filename}" — недопустимое имя для файла Java.`);
+        continue;
+      }
+    } else if (!isAllowedDataName(filename)) {
+      alert(dataNameMessage(filename));
+      continue;
+    }
+    if (file.size > MAX_DATA_FILE_KB * 1024) {
+      alert(
+        `"${filename}" — ${formatSize(file.size)}, это больше ${MAX_DATA_FILE_KB} КБ. ` +
+          "Возьмите файл меньше или урежьте данные."
+      );
+      continue;
+    }
+
+    let text;
+    try {
+      text = await file.text();
+    } catch (err) {
+      alert(`Не удалось прочитать "${filename}": ${err.message}`);
+      continue;
+    }
+    // A file that isn't text comes back with replacement characters; adding it
+    // as text would quietly corrupt it.
+    if (text.includes("�")) {
+      alert(
+        `"${filename}" не является текстовым файлом (внутри двоичные данные). ` +
+          "В проект можно добавить только текстовые данные."
+      );
+      continue;
+    }
+
+    const existing = projectFiles.find((f) => f.filename === filename);
+    if (existing) {
+      if (!confirm(`"${filename}" уже есть в проекте. Заменить содержимое?`)) continue;
+      existing.content = text;
+      existing.encoding = "text";
+    } else {
+      projectFiles.push({ filename, content: text, encoding: "text" });
+    }
+    lastAdded = filename;
+  }
+
+  if (lastAdded) openFile(lastAdded);
+  else renderFileTree();
 }
 
 function deleteFile(filename) {
@@ -660,23 +924,81 @@ function deleteFile(filename) {
   if (!confirm(`Delete ${filename}? This only affects your unsaved project.`)) return;
 
   projectFiles = projectFiles.filter((f) => f.filename !== filename);
+  if (entryJavaFile === filename) entryJavaFile = null;
   if (activeFile === filename) {
-    activeFile = projectFiles[0].filename;
-    editor.setValue(projectFiles[0].content);
+    activeFile = (entryFile() || projectFiles[0].filename);
+    applyEditorToActiveFile();
   }
   renderFileTree();
 }
 
 // Replaces the whole project - used when a saved version is opened.
 function loadProject(files, entryFilename) {
-  projectFiles = files.map((f) => ({ filename: f.filename, content: f.content }));
-  const entry =
+  projectFiles = files.map((f) => ({
+    filename: f.filename,
+    content: f.content,
+    encoding: f.encoding === "base64" ? "base64" : "text",
+  }));
+  entryJavaFile =
     entryFilename && projectFiles.some((f) => f.filename === entryFilename)
       ? entryFilename
-      : projectFiles[0].filename;
-  activeFile = entry;
-  editor.setValue(currentFile().content);
+      : null;
+  activeFile = entryFile() || projectFiles[0].filename;
+  applyEditorToActiveFile();
   renderFileTree();
+}
+
+// Takes back the data files as the program left them: a file it created
+// appears in the tree, one it rewrote is updated, one it deleted goes away.
+// This is what makes a two-step lab work - write a file in one run, read it in
+// the next - and what gets snapshotted when the version is saved.
+function mergeFilesFromRun(files, warnings) {
+  if (!Array.isArray(files)) return;
+  syncEditorToFile();
+
+  const before = new Map(
+    projectFiles.filter((f) => !isJavaFile(f.filename)).map((f) => [f.filename, f])
+  );
+  const added = [];
+  const changed = [];
+
+  for (const file of files) {
+    const encoding = file.encoding === "base64" ? "base64" : "text";
+    const existing = before.get(file.filename);
+    if (!existing) {
+      projectFiles.push({ filename: file.filename, content: file.content, encoding });
+      added.push(file.filename);
+    } else if (existing.content !== file.content || existing.encoding !== encoding) {
+      existing.content = file.content;
+      existing.encoding = encoding;
+      changed.push(file.filename);
+    }
+    before.delete(file.filename);
+  }
+
+  // Whatever is left in `before` was in the working directory when the program
+  // started and is not there now - the program deleted it.
+  const removed = [...before.keys()];
+  if (removed.length > 0) {
+    projectFiles = projectFiles.filter((f) => !removed.includes(f.filename));
+    if (removed.includes(activeFile)) {
+      activeFile = entryFile() || projectFiles[0].filename;
+    }
+  }
+
+  const parts = [];
+  if (added.length) parts.push(`новые: ${added.join(", ")}`);
+  if (changed.length) parts.push(`изменены: ${changed.join(", ")}`);
+  if (removed.length) parts.push(`удалены: ${removed.join(", ")}`);
+  if (parts.length) appendConsole("status", `\n— Файлы проекта (${parts.join("; ")})\n`);
+  for (const warning of warnings || []) {
+    appendConsole("status", `— ${warning}\n`);
+  }
+
+  if (parts.length || (warnings || []).length) {
+    applyEditorToActiveFile();
+    renderFileTree();
+  }
 }
 
 function formatSize(bytes) {
@@ -959,12 +1281,20 @@ async function runCode() {
   typedThisRun = [];
   setConsoleRunning(true);
 
+  const entry = entryFile();
+  if (!entry) {
+    setConsoleRunning(false);
+    renderOutput("", "В проекте нет файла .java, который можно запустить.", "Error");
+    return;
+  }
+
   let started;
   try {
     started = await api("/api/submissions/interactive", {
       method: "POST",
-      // Every file is compiled; the open one is the entry point.
-      body: JSON.stringify({ files: projectFiles, entry: activeFile }),
+      // Every .java file is compiled; the entry one holds main(). Data files
+      // travel with it and become the program's working directory.
+      body: JSON.stringify({ files: projectFiles, entry }),
     });
   } catch (err) {
     setConsoleRunning(false);
@@ -987,6 +1317,8 @@ async function runCode() {
     const chunk = JSON.parse(event.data);
     if (chunk.type === "exit") {
       appendConsole("status", `\n— ${chunk.text}\n`);
+      // Files the program wrote come with the exit event.
+      mergeFilesFromRun(chunk.files, chunk.warnings);
       closeRunStream();
       setConsoleRunning(false);
       return;
@@ -1050,7 +1382,11 @@ async function saveVersion(status) {
         // together with the console input it should be run against.
         ...(isText
           ? { code: textAnswer() }
-          : { files: projectFiles, entry: activeFile, stdin: consoleInput() }),
+          : {
+              files: projectFiles,
+              entry: entryFile() || activeFile,
+              stdin: consoleInput(),
+            }),
         status,
         // Optional name for this version, shown in the history instead of a
         // bare number.

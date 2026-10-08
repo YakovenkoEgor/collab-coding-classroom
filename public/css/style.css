@@ -100,6 +100,42 @@ input:focus, textarea:focus, select:focus {
   overflow-y: auto;
 }
 
+/* --- Folding the sidebar away (see js/ui.js) --- */
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.sidebar-head h3 { margin-bottom: 0; }
+
+.sidebar-toggle {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  line-height: 1;
+  font-size: 15px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.sidebar-toggle:hover {
+  background: transparent;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Collapsed: a strip just wide enough for the arrow. Everything else in the
+   panel is out of the way, the arrow included in its own row. */
+.layout.sidebar-collapsed { grid-template-columns: 36px 1fr; }
+.layout.sidebar-collapsed .sidebar { padding: 12px 6px; }
+.layout.sidebar-collapsed .sidebar > *:not(.sidebar-head) { display: none; }
+.layout.sidebar-collapsed .sidebar-head { justify-content: center; margin-bottom: 0; }
+.layout.sidebar-collapsed .sidebar-head h3 { display: none; }
+
 .card {
   background: var(--bg-panel);
   border: 1px solid var(--border);
@@ -291,6 +327,44 @@ h3 { font-size: 14px; margin: 0 0 10px 0; color: var(--text-dim); text-transform
 .profile-table td { padding: 4px 0; font-size: 14px; }
 .profile-table td.muted { width: 140px; }
 
+/* --- Data files in a project --- */
+
+/* The two buttons under the file tree sit at the bottom, stacked. */
+.file-tree-actions {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.file-tree-actions button { width: 100%; }
+
+.data-badge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.data-badge.binary { color: var(--warn); border-color: var(--warn); }
+
+/* Stands where the editor would be when the open file is binary. */
+.binary-note {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  font-size: 13px;
+  color: var(--text-dim);
+  background: var(--bg-panel-raised);
+  overflow-y: auto;
+}
+.binary-note strong { color: var(--text); font-family: var(--font-mono); }
+.editor-layout.resizable .binary-note { height: 100%; }
+
 /* --- Per-group deadlines and maximum scores --- */
 .group-rules { margin-top: 6px; }
 .group-rules th, .group-rules td { padding: 6px 8px; }
@@ -379,6 +453,37 @@ h3 { font-size: 14px; margin: 0 0 10px 0; color: var(--text-dim); text-transform
 .editor-layout.resizable .editor-wrap,
 .editor-layout.resizable .file-tree { height: 100%; }
 
+/* The file tree's width comes from the layout, so the grip between the tree
+   and the editor can change the split between them (see js/ui.js). */
+.editor-layout.resizable .file-tree {
+  flex: 0 0 var(--tree-width, 190px);
+  width: var(--tree-width, 190px);
+}
+
+.tree-resizer {
+  flex: 0 0 auto;
+  width: 12px;
+  align-self: stretch;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel-raised);
+  cursor: ew-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  touch-action: none;
+}
+.tree-resizer::after {
+  content: "";
+  width: 2px;
+  height: 46px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.tree-resizer:hover { border-color: var(--accent); }
+.tree-resizer:hover::after { background: var(--accent); }
+
 .editor-resizer {
   height: 12px;
   margin-top: 4px;
@@ -456,6 +561,7 @@ h3 { font-size: 14px; margin: 0 0 10px 0; color: var(--text-dim); text-transform
    broader button rule might say. */
 .file-node .entry-badge,
 .file-node .delete-file,
+.file-node .download-file,
 .file-node .set-entry { flex: 0 0 auto; }
 
 .entry-badge {
@@ -470,7 +576,8 @@ h3 { font-size: 14px; margin: 0 0 10px 0; color: var(--text-dim); text-transform
   padding: 1px 5px;
 }
 
-.delete-file {
+.delete-file,
+.download-file {
   background: transparent;
   border: none;
   color: var(--text-dim);
@@ -483,6 +590,8 @@ h3 { font-size: 14px; margin: 0 0 10px 0; color: var(--text-dim); text-transform
   margin-top: 0;
 }
 .delete-file:hover { background: transparent; color: var(--error); }
+/* Downloading a data file is not destructive - it must not look like it. */
+.download-file:hover { background: transparent; color: var(--accent); }
 
 #entry-hint { font-size: 12px; margin-top: 8px; }
 
