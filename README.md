@@ -128,6 +128,10 @@ database gets corrupted.
 3. Click an assignment to see every student's latest submission status.
 4. Click a student's row to see their full version history, view any
    version's code and output, leave a grade, and hold a discussion thread.
+5. **Notifications** in the sidebar: write a class-wide announcement and
+   say how long it stays up. Every student sees it as a banner above the
+   working area until then; expired ones stay in your list so you can see
+   what was announced.
 
 ### As a student
 
@@ -146,7 +150,11 @@ database gets corrupted.
    back into the tree when the run ends — including a serialised object,
    which shows up as a binary file you can download but not edit — and is
    saved with the version, so the next run can read it back.
-5. Use the discussion box to ask questions. Whichever version is currently
+6. Announcements from the teacher appear as banners above the working
+   area. Closing one hides it for the rest of your session; the
+   **Notifications** list in the sidebar still holds everything active,
+   and clicking an entry brings its banner back.
+7. Use the discussion box to ask questions. Whichever version is currently
    loaded in your editor gets linked to your next message automatically,
    so your teacher can jump straight to the code you're asking about.
 
@@ -198,6 +206,7 @@ java-classroom/
 │   ├── assignments.js       # Create/list assignments
 │   ├── submissions.js       # Run code, save versions
 │   ├── discussions.js       # Discussion threads + messages
+│   ├── notifications.js     # Class-wide announcements
 │   └── grades.js            # Grading
 ├── public/
 │   ├── login.html / js/login.js

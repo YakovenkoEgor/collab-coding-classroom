@@ -3,7 +3,11 @@ const db = require("../db/database");
 const { requireLogin, requireRole } = require("../middleware/auth");
 const storage = require("../storage");
 const { isValidJavaFilename, SandboxError } = require("../sandbox");
-const { withDeadlineState } = require("../deadlines");
+const {
+  withDeadlineState,
+  normalizeDeadline,
+  DeadlineError,
+} = require("../deadlines");
 const rules = require("../assignmentRules");
 const projectFiles = require("../projectFiles");
 
@@ -245,10 +249,6 @@ router.get("/:id/files/:fileId/download", requireLogin, (req, res) => {
   });
 });
 
-// The browser sends datetime-local as "YYYY-MM-DDTHH:MM"; store it with a
-// space so it sorts and compares like the other timestamps.
-class DeadlineError extends Error {}
-
 // The top mark a teacher can award for this assignment. Kept a whole number:
 // the grade box steps through integers, and half-points would make the
 // wrap-around behaviour and the gradebook export messy.
@@ -265,15 +265,6 @@ function normalizeMaxScore(raw) {
     );
   }
   return value;
-}
-
-function normalizeDeadline(deadline) {
-  if (typeof deadline !== "string" || deadline.trim() === "") return null;
-  const normalized = deadline.trim().replace("T", " ").slice(0, 16);
-  if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(normalized)) {
-    throw new DeadlineError("Deadline must look like 2026-09-01 18:00");
-  }
-  return normalized;
 }
 
 // Per-group exceptions from the form: [{ groupName, deadline, maxScore }].

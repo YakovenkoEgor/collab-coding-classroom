@@ -67,6 +67,37 @@ async function loadAssignments() {
   });
 }
 
+// ---------------------------------------------------------------------
+// Notifications
+//
+// The banners themselves are handled in ui.js, shared with the teacher's
+// page. This is the sidebar list: everything active right now, closed ones
+// included - clicking one brings its banner back so it can be read again.
+// ---------------------------------------------------------------------
+
+window.onNotificationsLoaded = (list) => {
+  const container = document.getElementById("notification-list");
+  if (!container) return;
+  container.innerHTML = "";
+  if (list.length === 0) {
+    container.innerHTML = '<p class="muted">Активных уведомлений нет.</p>';
+    return;
+  }
+  list.forEach((item) => {
+    const div = document.createElement("div");
+    div.className = "assignment-item" + (item.dismissed ? " is-dismissed" : "");
+    div.innerHTML = `<div class="title">${escapeHtml(item.body)}</div>
+      <div class="meta">активно до ${escapeHtml(formatDeadline(item.activeUntil))}${
+        item.dismissed ? " · закрыто" : ""
+      }</div>`;
+    div.title = item.dismissed
+      ? "Нажмите, чтобы показать уведомление снова"
+      : item.body;
+    div.onclick = () => revealNotification(item.id);
+    container.appendChild(div);
+  });
+};
+
 function escapeHtml(str) {
   const d = document.createElement("div");
   d.textContent = str;
@@ -1485,8 +1516,11 @@ document.getElementById("logout-btn").onclick = async () => {
   window.location.href = "/login.html";
 };
 
-(async function init() {
+(async function initStudent() {
   initEditor();
   await loadMe();
   await loadAssignments();
+  // ui.js already asked for these on load; this call is what reliably fills
+  // the sidebar list, whose renderer is defined in this file.
+  await loadNotifications();
 })();

@@ -47,6 +47,7 @@ const counts = {
     .prepare("SELECT COUNT(*) c FROM assignment_group_rules")
     .get().c,
   submission_uploads: db.prepare("SELECT COUNT(*) c FROM submission_uploads").get().c,
+  notifications: db.prepare("SELECT COUNT(*) c FROM notifications").get().c,
 };
 
 const teachers = db.prepare("SELECT COUNT(*) c FROM users WHERE role = 'teacher'").get().c;
@@ -84,6 +85,9 @@ const wipe = db.transaction(() => {
   db.prepare("DELETE FROM assignment_group_rules").run();
   db.prepare("DELETE FROM submission_uploads").run();
   db.prepare("DELETE FROM assignments").run();
+  // notifications.created_by points at the teacher who wrote them, so these
+  // have to go before any account does.
+  db.prepare("DELETE FROM notifications").run();
   if (allUsers) {
     // grades.graded_by and assignment_files.uploaded_by point at teachers, so
     // those rows are already gone by this point.
@@ -122,6 +126,7 @@ for (const table of [
   "assignment_starter_files",
   "assignment_group_rules",
   "submission_uploads",
+  "notifications",
 ]) {
   console.log(
     `  ${table.padEnd(26)} ${db.prepare(`SELECT COUNT(*) c FROM ${table}`).get().c}`

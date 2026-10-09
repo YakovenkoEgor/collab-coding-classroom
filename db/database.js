@@ -143,6 +143,17 @@ CREATE TABLE IF NOT EXISTS assignment_files (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Class-wide announcements the teacher writes. Each one is shown to students
+-- until active_until passes; nothing is deleted when it expires, so the
+-- teacher can still see what was announced.
+CREATE TABLE IF NOT EXISTS notifications (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  body         TEXT NOT NULL,
+  active_until TEXT NOT NULL,
+  created_by   INTEGER NOT NULL REFERENCES users(id),
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS grades (
   assignment_id INTEGER NOT NULL REFERENCES assignments(id),
   student_id    INTEGER NOT NULL REFERENCES users(id),

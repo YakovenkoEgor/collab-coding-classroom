@@ -1,6 +1,21 @@
 // Shared deadline logic, used by both the teacher's view of a student and the
 // student's own assignment list, so the two can't drift apart.
 
+// A date and time as the app stores them: "YYYY-MM-DD HH:MM" in local time,
+// which compares correctly with datetime('now') and sorts as a string.
+// The browser sends datetime-local as "YYYY-MM-DDTHH:MM"; the T becomes a
+// space here. Shared by assignment deadlines and notifications.
+class DeadlineError extends Error {}
+
+function normalizeDeadline(deadline) {
+  if (typeof deadline !== "string" || deadline.trim() === "") return null;
+  const normalized = deadline.trim().replace("T", " ").slice(0, 16);
+  if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(normalized)) {
+    throw new DeadlineError("Deadline must look like 2026-09-01 18:00");
+  }
+  return normalized;
+}
+
 // Work is "at risk" when nothing has been handed in and the deadline is less
 // than this many days away; once the deadline has passed it becomes "overdue".
 const DEADLINE_WARNING_DAYS = 2;
@@ -27,4 +42,9 @@ function withDeadlineState(row) {
   return result;
 }
 
-module.exports = { DEADLINE_WARNING_DAYS, withDeadlineState };
+module.exports = {
+  DEADLINE_WARNING_DAYS,
+  withDeadlineState,
+  DeadlineError,
+  normalizeDeadline,
+};

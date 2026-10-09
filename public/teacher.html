@@ -15,6 +15,9 @@
     </div>
   </div>
 
+  <!-- Active announcements, between the top bar and the working area. -->
+  <div id="notification-bar"></div>
+
   <div class="layout">
     <div class="sidebar">
       <div class="sidebar-head">
@@ -37,6 +40,13 @@
         Файл с логинами содержит пароли в открытом виде — он нужен, чтобы раздать
         их ученикам, но хранить его в общем доступе не стоит.
       </p>
+
+      <hr style="border-color: var(--border); margin: 16px 0">
+      <h3>Notifications</h3>
+      <div id="notification-manage"></div>
+      <button class="secondary" id="new-notification-btn" style="width:100%; margin-top:8px">
+        + New notification
+      </button>
     </div>
 
     <div class="main" id="main-content">
