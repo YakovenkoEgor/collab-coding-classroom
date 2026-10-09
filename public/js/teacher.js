@@ -804,8 +804,10 @@ async function selectAssignment(assignment) {
   activeAssignment = assignment;
   activeStudent = null;
   activeProfile = null;
+  activeNotification = null;
   await loadAssignments();
   await loadStudentManage(); // drop the profile highlight in the sidebar
+  await loadNotificationManage(); // and the notification one
   await renderOverview();
 }
 
@@ -1530,7 +1532,9 @@ async function selectStudentProfile(studentId) {
   activeAssignment = null;
   activeStudent = null;
   activeProfile = { id: studentId };
+  activeNotification = null;
   await loadAssignments(); // clears the assignment highlight
+  await loadNotificationManage();
 
   const { student, assignments: rows } = await api(`/api/auth/users/${studentId}`);
   activeProfile = student;
@@ -1610,10 +1614,177 @@ document.getElementById("logout-btn").onclick = async () => {
   window.location.href = "/login.html";
 };
 
+// ---------- Notifications ----------
+//
+// Class-wide announcements. The banners students see are rendered by ui.js;
+// this is the authoring side: the sidebar list and the form behind it.
+
+let activeNotification = null; // the one open in the form, if any
+
+async function loadNotificationManage() {
+  const container = document.getElementById("notification-manage");
+  if (!container) return;
+  let list = [];
+  try {
+    ({ notifications: list } = await api("/api/notifications/all"));
+  } catch (err) {
+    container.innerHTML = `<p class="muted">Не удалось загрузить уведомления: ${escapeHtml(
+      err.message
+    )}</p>`;
+    return;
+  }
+
+  container.innerHTML = "";
+  if (list.length === 0) {
+    container.innerHTML = '<p class="muted">Уведомлений пока нет.</p>';
+    return;
+  }
+  list.forEach((item) => {
+    const div = document.createElement("div");
+    div.className =
+      "assignment-item" +
+      (activeNotification && activeNotification.id === item.id ? " active" : "") +
+      (item.active ? "" : " is-dismissed");
+    div.innerHTML = `<div class="title">${escapeHtml(item.body)}</div>
+      <div class="meta">${
+        item.active
+          ? "активно до " + escapeHtml(formatDeadline(item.activeUntil))
+          : "истекло " + escapeHtml(formatDeadline(item.activeUntil))
+      }</div>`;
+    div.title = item.body;
+    div.onclick = () => renderNotificationForm(item);
+    container.appendChild(div);
+  });
+}
+
+// One form for writing a new announcement and for editing an existing one.
+function renderNotificationForm(existing) {
+  const editing = !!existing;
+  activeNotification = existing || null;
+  activeAssignment = null;
+  activeStudent = null;
+  activeProfile = null;
+  loadAssignments();
+  loadStudentManage();
+  loadNotificationManage();
+
+  // Default: active until the end of tomorrow, which is the common case for
+  // "read this before the next class".
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(23, 59, 0, 0);
+  const pad = (n) => String(n).padStart(2, "0");
+  const asInput = (d) =>
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+      d.getHours()
+    )}:${pad(d.getMinutes())}`;
+
+  const main = document.getElementById("main-content");
+  main.innerHTML = `
+    <div class="card">
+      <h2>${editing ? "Edit notification" : "New notification"}</h2>
+      <p class="muted">
+        Текст увидит каждый ученик — плашкой над рабочей областью, пока
+        уведомление активно. Ученик может закрыть плашку; до конца его сессии
+        она больше не появится.
+      </p>
+      <div class="form-row">
+        <label>Текст уведомления</label>
+        <textarea id="n-body" rows="4"
+                  placeholder="Например: в пятницу занятие в 302 аудитории">${
+                    editing ? escapeHtml(existing.body) : ""
+                  }</textarea>
+      </div>
+      <div class="form-row">
+        <label>Активно до</label>
+        <input type="datetime-local" id="n-until" value="${
+          editing
+            ? escapeHtml(String(existing.activeUntil).replace(" ", "T"))
+            : asInput(tomorrow)
+        }">
+      </div>
+      <div id="n-message"></div>
+      <div class="toolbar">
+        <button id="n-save">${editing ? "Save changes" : "Publish"}</button>
+        ${
+          editing
+            ? '<button class="secondary danger" id="n-delete">Delete</button>'
+            : ""
+        }
+      </div>
+    </div>`;
+
+  document.getElementById("n-save").onclick = () => saveNotification(existing);
+  if (editing) {
+    document.getElementById("n-delete").onclick = () => deleteNotification(existing);
+  }
+}
+
+function notificationMessage(text, kind) {
+  const box = document.getElementById("n-message");
+  if (!box) return;
+  box.className = text ? (kind === "error" ? "form-message error" : "form-message success") : "";
+  box.textContent = text || "";
+}
+
+async function saveNotification(existing) {
+  const body = document.getElementById("n-body").value.trim();
+  const activeUntil = document.getElementById("n-until").value;
+  if (!body) return notificationMessage("Напишите текст уведомления.", "error");
+  if (!activeUntil) return notificationMessage("Укажите, до какого момента оно активно.", "error");
+
+  const btn = document.getElementById("n-save");
+  btn.disabled = true;
+  try {
+    const payload = JSON.stringify({ body, activeUntil });
+    if (existing) {
+      await api(`/api/notifications/${existing.id}`, { method: "PUT", body: payload });
+      activeNotification = { ...existing, body, activeUntil: activeUntil.replace("T", " ") };
+      notificationMessage("Изменения сохранены.", "success");
+    } else {
+      const { notification } = await api("/api/notifications", {
+        method: "POST",
+        body: payload,
+      });
+      // Re-render first: the form becomes the edit form for what was just
+      // published, and only then does the message have somewhere to live.
+      renderNotificationForm(notification);
+      notificationMessage("Уведомление опубликовано.", "success");
+    }
+    await loadNotificationManage();
+    // The teacher's own banner bar shows what the students now see.
+    await loadNotifications();
+  } catch (err) {
+    notificationMessage("Не удалось сохранить: " + err.message, "error");
+  } finally {
+    const again = document.getElementById("n-save");
+    if (again) again.disabled = false;
+  }
+}
+
+async function deleteNotification(existing) {
+  if (!confirm(`Удалить уведомление «${existing.body.slice(0, 60)}»?`)) return;
+  try {
+    await api(`/api/notifications/${existing.id}`, { method: "DELETE" });
+    activeNotification = null;
+    await loadNotificationManage();
+    await loadNotifications();
+    document.getElementById("main-content").innerHTML =
+      '<div class="card"><p class="muted">Уведомление удалено.</p></div>';
+  } catch (err) {
+    notificationMessage("Не удалось удалить: " + err.message, "error");
+  }
+}
+
+document.getElementById("new-notification-btn").onclick = () =>
+  renderNotificationForm(null);
+
 (async function init() {
   initEditor();
   await loadMe();
   await loadPendingReview();
   await loadAssignments();
   await loadStudentManage();
+  await loadNotificationManage();
+  await loadNotifications();
 })();
