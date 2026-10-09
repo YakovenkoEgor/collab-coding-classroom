@@ -81,6 +81,41 @@ npm start
 
 Visit http://localhost:3000
 
+## Backups
+
+```bash
+npm run backup
+```
+
+Writes `backups/classroom-<timestamp>.tar.gz` holding the database
+(`classroom.db`), a JSON dump of every table, the `uploads/` directory
+and a `summary.json` with row counts. Safe to run while the app is
+serving: the database is snapshotted with SQLite's own `VACUUM INTO`, so
+the copy is consistent even under writes, and the JSON dumps are read
+back out of that snapshot rather than out of the live database.
+
+`-- --keep N` sets how many archives to keep (default 10, older ones are
+deleted); `-- --no-archive` leaves the folder unpacked. The script prints
+the command for copying the archive off the server when it finishes.
+
+To restore, stop the service and put `classroom.db` and `uploads/` back:
+
+```bash
+sudo systemctl stop classroom
+```
+
+```bash
+sudo -u classroom bash -c 'cd /opt/classroom/app && tar -xzf backups/classroom-ДАТА.tar.gz -C /tmp && cp /tmp/classroom-ДАТА/classroom.db . && rm -f classroom.db-wal classroom.db-shm && cp -r /tmp/classroom-ДАТА/uploads .'
+```
+
+```bash
+sudo systemctl start classroom
+```
+
+The old `-wal`/`-shm` files have to go: they belong to the database you
+are replacing, and leaving them next to a restored file is how a
+database gets corrupted.
+
 ## Using the app
 
 ### As the teacher
