@@ -100,6 +100,45 @@ input:focus, textarea:focus, select:focus {
   overflow-y: auto;
 }
 
+/* --- Announcements: full-width banners under the top bar --- */
+.notification-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 20px;
+  background: var(--bg-panel-raised);
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  font-size: 14px;
+}
+.notification-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.notification-until {
+  flex: 0 0 auto;
+  padding-top: 2px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.notification-close {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  width: auto;
+}
+.notification-close:hover { background: transparent; color: var(--error); }
+
+/* A closed announcement stays in the sidebar list, just quieter. */
+.assignment-item.is-dismissed .title { color: var(--text-dim); }
+
 /* --- Folding the sidebar away (see js/ui.js) --- */
 .sidebar-head {
   display: flex;

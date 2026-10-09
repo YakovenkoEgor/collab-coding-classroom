@@ -197,6 +197,114 @@ function makeEditorResizable(layout) {
 }
 
 // ---------------------------------------------------------------------
+// Notifications
+//
+// Class-wide announcements the teacher writes, shown as full-width banners
+// between the top bar and the working area. Closing one hides it for the rest
+// of the session - the server remembers that per session, so it comes back on
+// the next login while it is still active, and not before.
+//
+// The list is also handed to the page through onNotificationsLoaded, which
+// student.js and teacher.js use to fill their own sidebar sections.
+// ---------------------------------------------------------------------
+
+let notifications = [];
+// Ids the student asked to see again by clicking them in the sidebar. Only
+// for this page view: an explicit click is not the same as the banner coming
+// back on its own.
+const revealedNotifications = new Set();
+const NOTIFICATION_REFRESH_MS = 5 * 60 * 1000;
+
+function formatNotificationDate(value) {
+  const date = new Date(String(value).replace(" ", "T"));
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+}
+
+function renderNotificationBar() {
+  const bar = document.getElementById("notification-bar");
+  if (!bar) return;
+  bar.innerHTML = "";
+
+  for (const item of notifications) {
+    if (item.dismissed && !revealedNotifications.has(item.id)) continue;
+
+    const banner = document.createElement("div");
+    banner.className = "notification-banner";
+    banner.dataset.id = item.id;
+
+    const body = document.createElement("div");
+    body.className = "notification-body";
+    // textContent, not innerHTML: the text is whatever the teacher typed.
+    body.textContent = item.body;
+    banner.appendChild(body);
+
+    const until = document.createElement("span");
+    until.className = "notification-until";
+    until.textContent = `до ${formatNotificationDate(item.activeUntil)}`;
+    banner.appendChild(until);
+
+    const close = document.createElement("button");
+    close.className = "notification-close";
+    close.textContent = "×";
+    close.title = "Закрыть до конца сессии";
+    close.onclick = () => dismissNotification(item.id);
+    banner.appendChild(close);
+
+    bar.appendChild(banner);
+  }
+}
+
+async function loadNotifications() {
+  if (!document.getElementById("notification-bar")) return;
+  try {
+    const res = await fetch("/api/notifications", {
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!res.ok) return; // not logged in yet, or the server is unhappy - the
+    // page's own loader deals with that
+    const data = await res.json();
+    notifications = Array.isArray(data.notifications) ? data.notifications : [];
+  } catch {
+    return; // offline: leave whatever is on screen alone
+  }
+  renderNotificationBar();
+  if (typeof window.onNotificationsLoaded === "function") {
+    window.onNotificationsLoaded(notifications);
+  }
+}
+
+async function dismissNotification(id) {
+  revealedNotifications.delete(id);
+  const item = notifications.find((n) => n.id === id);
+  if (item) item.dismissed = true;
+  renderNotificationBar();
+  if (typeof window.onNotificationsLoaded === "function") {
+    window.onNotificationsLoaded(notifications);
+  }
+  try {
+    await fetch(`/api/notifications/${id}/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch {
+    // The banner is already gone from this page; the worst case is that it
+    // comes back on the next reload.
+  }
+}
+
+// Brings a closed banner back, for the student who wants to re-read it.
+function revealNotification(id) {
+  revealedNotifications.add(id);
+  renderNotificationBar();
+  scrollToTop();
+}
+
+loadNotifications();
+// An announcement posted while the page is open should still turn up, and an
+// expired one should go away, without the student reloading.
+setInterval(loadNotifications, NOTIFICATION_REFRESH_MS);
+
+// ---------------------------------------------------------------------
 // Collapsible sidebar
 //
 // The arrow next to the first heading folds the whole panel away, leaving a

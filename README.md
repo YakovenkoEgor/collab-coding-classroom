@@ -81,6 +81,41 @@ npm start
 
 Visit http://localhost:3000
 
+## Backups
+
+```bash
+npm run backup
+```
+
+Writes `backups/classroom-<timestamp>.tar.gz` holding the database
+(`classroom.db`), a JSON dump of every table, the `uploads/` directory
+and a `summary.json` with row counts. Safe to run while the app is
+serving: the database is snapshotted with SQLite's own `VACUUM INTO`, so
+the copy is consistent even under writes, and the JSON dumps are read
+back out of that snapshot rather than out of the live database.
+
+`-- --keep N` sets how many archives to keep (default 10, older ones are
+deleted); `-- --no-archive` leaves the folder unpacked. The script prints
+the command for copying the archive off the server when it finishes.
+
+To restore, stop the service and put `classroom.db` and `uploads/` back:
+
+```bash
+sudo systemctl stop classroom
+```
+
+```bash
+sudo -u classroom bash -c 'cd /opt/classroom/app && tar -xzf backups/classroom-ДАТА.tar.gz -C /tmp && cp /tmp/classroom-ДАТА/classroom.db . && rm -f classroom.db-wal classroom.db-shm && cp -r /tmp/classroom-ДАТА/uploads .'
+```
+
+```bash
+sudo systemctl start classroom
+```
+
+The old `-wal`/`-shm` files have to go: they belong to the database you
+are replacing, and leaving them next to a restored file is how a
+database gets corrupted.
+
 ## Using the app
 
 ### As the teacher
@@ -93,6 +128,10 @@ Visit http://localhost:3000
 3. Click an assignment to see every student's latest submission status.
 4. Click a student's row to see their full version history, view any
    version's code and output, leave a grade, and hold a discussion thread.
+5. **Notifications** in the sidebar: write a class-wide announcement and
+   say how long it stays up. Every student sees it as a banner above the
+   working area until then; expired ones stay in your list so you can see
+   what was announced.
 
 ### As a student
 
@@ -111,7 +150,11 @@ Visit http://localhost:3000
    back into the tree when the run ends — including a serialised object,
    which shows up as a binary file you can download but not edit — and is
    saved with the version, so the next run can read it back.
-5. Use the discussion box to ask questions. Whichever version is currently
+6. Announcements from the teacher appear as banners above the working
+   area. Closing one hides it for the rest of your session; the
+   **Notifications** list in the sidebar still holds everything active,
+   and clicking an entry brings its banner back.
+7. Use the discussion box to ask questions. Whichever version is currently
    loaded in your editor gets linked to your next message automatically,
    so your teacher can jump straight to the code you're asking about.
 
@@ -163,6 +206,7 @@ java-classroom/
 │   ├── assignments.js       # Create/list assignments
 │   ├── submissions.js       # Run code, save versions
 │   ├── discussions.js       # Discussion threads + messages
+│   ├── notifications.js     # Class-wide announcements
 │   └── grades.js            # Grading
 ├── public/
 │   ├── login.html / js/login.js
