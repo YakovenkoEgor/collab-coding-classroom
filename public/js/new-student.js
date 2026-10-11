@@ -7,10 +7,10 @@ async function api(path, opts = {}) {
   });
   if (res.status === 401) {
     window.location.href = "/login.html";
-    throw new Error("Not logged in");
+    throw new Error("Вы не авторизованы");
   }
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Request failed");
+  if (!res.ok) throw new Error(data.error || "Запрос не выполнен");
   return data;
 }
 
@@ -20,7 +20,7 @@ async function loadMe() {
     window.location.href = "/login.html";
     return;
   }
-  document.getElementById("whoami").textContent = `${user.displayName} (teacher)`;
+  document.getElementById("whoami").textContent = `${user.displayName} (преподаватель)`;
 }
 
 function showMessage(text, kind) {
@@ -54,11 +54,11 @@ async function createStudent(stayOnPage) {
   const data = fields();
 
   if (!data.firstName || !data.lastName || !data.username || !data.password) {
-    showMessage("First name, last name, username and password are required.", "error");
+    showMessage("Имя, фамилия, логин и пароль обязательны.", "error");
     return;
   }
   if (data.password.length < 6) {
-    showMessage("Password must be at least 6 characters.", "error");
+    showMessage("Пароль должен быть не короче 6 символов.", "error");
     return;
   }
 
@@ -75,7 +75,7 @@ async function createStudent(stayOnPage) {
     });
     if (stayOnPage) {
       showMessage(
-        `Created ${studentName(user)}${user.groupName ? " (" + user.groupName + ")" : ""} — username "${user.username}".`,
+        `Создан ученик ${studentName(user)}${user.groupName ? " (" + user.groupName + ")" : ""} — логин «${user.username}».`,
         "success"
       );
       clearForm(true);
@@ -83,7 +83,7 @@ async function createStudent(stayOnPage) {
       window.location.href = "/teacher.html";
     }
   } catch (err) {
-    showMessage("Could not create student: " + err.message, "error");
+    showMessage("Не удалось создать ученика: " + err.message, "error");
   } finally {
     buttons.forEach((b) => (b.disabled = false));
   }
@@ -124,7 +124,7 @@ document.getElementById("import-btn").onclick = async () => {
 
   const btn = document.getElementById("import-btn");
   btn.disabled = true;
-  btn.textContent = "Importing…";
+  btn.textContent = "Импорт…";
   try {
     const csv = await file.text();
     const result = await api("/api/auth/users/import", {
@@ -133,16 +133,16 @@ document.getElementById("import-btn").onclick = async () => {
     });
     renderImportResult(result);
   } catch (err) {
-    showImportMessage("Import failed: " + err.message, "error");
+    showImportMessage("Импорт не удался: " + err.message, "error");
   } finally {
     btn.disabled = false;
-    btn.textContent = "Import students";
+    btn.textContent = "Импортировать";
   }
 };
 
 function renderImportResult({ created, errors, total }) {
   showImportMessage(
-    `Read ${total} row(s): ${created.length} student(s) created, ${errors.length} skipped.`,
+    `Прочитано строк: ${total}. Создано учеников: ${created.length}, пропущено: ${errors.length}.`,
     errors.length > 0 && created.length === 0 ? "error" : "success"
   );
 
@@ -151,12 +151,12 @@ function renderImportResult({ created, errors, total }) {
 
   if (created.length > 0) {
     box.innerHTML += `
-      <h3>Created accounts</h3>
+      <h3>Созданные учётные записи</h3>
       <p class="muted" style="font-size:12px">
-        Write these down or copy them now — they are also kept in each student's profile.
+        Запишите или скопируйте их сейчас — они также сохраняются в профиле каждого ученика.
       </p>
       <table>
-        <thead><tr><th>Student</th><th>Login</th><th>Password</th><th>Email</th></tr></thead>
+        <thead><tr><th>Ученик</th><th>Логин</th><th>Пароль</th><th>Почта</th></tr></thead>
         <tbody>
           ${created
             .map(
@@ -174,9 +174,9 @@ function renderImportResult({ created, errors, total }) {
 
   if (errors.length > 0) {
     box.innerHTML += `
-      <h3>Skipped rows</h3>
+      <h3>Пропущенные строки</h3>
       <table>
-        <thead><tr><th>Line</th><th>Value</th><th>Reason</th></tr></thead>
+        <thead><tr><th>Строка</th><th>Значение</th><th>Причина</th></tr></thead>
         <tbody>
           ${errors
             .map(

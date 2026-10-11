@@ -13,13 +13,13 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
     });
     const data = await res.json();
     if (!res.ok) {
-      errorBox.textContent = data.error || "Login failed";
+      errorBox.textContent = data.error || "Не удалось войти";
       errorBox.style.display = "block";
       return;
     }
     window.location.href = data.user.role === "teacher" ? "/teacher.html" : "/student.html";
   } catch (err) {
-    errorBox.textContent = "Could not reach the server.";
+    errorBox.textContent = "Сервер недоступен.";
     errorBox.style.display = "block";
   }
 });
@@ -36,8 +36,8 @@ document.getElementById("bootstrap-toggle").addEventListener("click", () => {
   const open = form.style.display !== "none";
   form.style.display = open ? "none" : "block";
   document.getElementById("bootstrap-toggle").textContent = open
-    ? "Create a teacher account"
-    : "Cancel";
+    ? "Создать учётную запись преподавателя"
+    : "Отмена";
 });
 
 document.getElementById("bootstrap-form").addEventListener("submit", async (e) => {
@@ -61,7 +61,7 @@ document.getElementById("bootstrap-form").addEventListener("submit", async (e) =
     });
     const data = await res.json();
     if (!res.ok) {
-      errorBox.textContent = data.error || "Could not create the account";
+      errorBox.textContent = data.error || "Не удалось создать учётную запись";
       errorBox.style.display = "block";
       return;
     }
@@ -73,7 +73,7 @@ document.getElementById("bootstrap-form").addEventListener("submit", async (e) =
     });
     window.location.href = login.ok ? "/teacher.html" : "/login.html";
   } catch (err) {
-    errorBox.textContent = "Could not reach the server.";
+    errorBox.textContent = "Сервер недоступен.";
     errorBox.style.display = "block";
   }
 });
@@ -86,7 +86,7 @@ async function refreshBootstrapOffer() {
     section.style.display = teacherExists ? "none" : "block";
     if (!teacherExists) {
       document.getElementById("bootstrap-note").textContent =
-        "No teacher account exists yet. Create the first one to get started.";
+        "Учётной записи преподавателя ещё нет. Создайте первую, чтобы начать работу.";
     }
   } catch (e) {}
 }

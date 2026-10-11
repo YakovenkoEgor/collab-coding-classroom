@@ -17,9 +17,9 @@ const MAX_BODY = 2000;
 
 function readBody(raw) {
   const body = String(raw === undefined || raw === null ? "" : raw).trim();
-  if (body === "") throw new DeadlineError("Notification text is required");
+  if (body === "") throw new DeadlineError("Напишите текст уведомления");
   if (body.length > MAX_BODY) {
-    throw new DeadlineError(`Notification text is longer than ${MAX_BODY} characters`);
+    throw new DeadlineError(`Текст уведомления длиннее ${MAX_BODY} символов`);
   }
   return body;
 }
@@ -27,7 +27,7 @@ function readBody(raw) {
 function readActiveUntil(raw) {
   const activeUntil = normalizeDeadline(raw);
   if (!activeUntil) {
-    throw new DeadlineError("Say until when the notification stays active");
+    throw new DeadlineError("Укажите, до какого момента уведомление активно");
   }
   return activeUntil;
 }
@@ -114,7 +114,7 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
   const existing = db
     .prepare("SELECT id FROM notifications WHERE id = ?")
     .get(req.params.id);
-  if (!existing) return res.status(404).json({ error: "Notification not found" });
+  if (!existing) return res.status(404).json({ error: "Уведомление не найдено" });
 
   let body;
   let activeUntil;
@@ -144,7 +144,7 @@ router.delete("/:id", requireLogin, requireRole("teacher"), (req, res) => {
 // the notification has just expired would be pointless noise.
 router.post("/:id/dismiss", requireLogin, (req, res) => {
   const id = parseInt(req.params.id, 10);
-  if (Number.isNaN(id)) return res.status(400).json({ error: "Bad notification id" });
+  if (Number.isNaN(id)) return res.status(400).json({ error: "Неверный идентификатор уведомления" });
   const dismissed = dismissedIds(req);
   if (!dismissed.includes(id)) dismissed.push(id);
   res.json({ ok: true });

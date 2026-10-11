@@ -3,6 +3,38 @@
 // reader back at the top of the page.
 
 // ---------------------------------------------------------------------
+// Wording shared by both dashboards
+//
+// Run statuses and version statuses are stored in the database in English -
+// they are data, not text - so they are turned into Russian here, at the one
+// place they reach the screen.
+// ---------------------------------------------------------------------
+
+const RUN_STATUS_LABEL = {
+  Accepted: "выполнено",
+  "Compilation Error": "ошибка компиляции",
+  "Compilation Time Limit Exceeded": "компиляция не уложилась во время",
+  "Time Limit Exceeded": "превышено время выполнения",
+  "Runtime Error": "ошибка во время выполнения",
+  "Sandbox Error": "ошибка песочницы",
+  "Not run": "не запускалось",
+  Saved: "сохранено",
+  Error: "ошибка",
+};
+
+function runStatusLabel(status) {
+  if (!status) return "—";
+  return RUN_STATUS_LABEL[status] || status;
+}
+
+const VERSION_STATUS_LABEL = { draft: "черновик", submitted: "сдано" };
+
+function versionStatusLabel(status) {
+  if (!status) return "—";
+  return VERSION_STATUS_LABEL[status] || status;
+}
+
+// ---------------------------------------------------------------------
 // Resizable editor
 //
 // The .editor-layout element owns the height; the file tree and the Monaco

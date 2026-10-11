@@ -1,21 +1,21 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
 <meta charset="UTF-8">
-<title>Java Classroom — Log in</title>
+<title>Java Classroom — Вход</title>
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
   <div class="login-page">
     <div class="login-card">
       <h1>Java Classroom</h1>
-      <p class="sub">Write, run, and submit Java. Discuss it with your teacher.</p>
+      <p class="sub">Пишите, запускайте и сдавайте код на Java. Обсуждайте работу с преподавателем.</p>
       <form id="login-form">
-        <label for="username">Username</label>
+        <label for="username">Логин</label>
         <input id="username" name="username" autocomplete="username" required>
-        <label for="password">Password</label>
+        <label for="password">Пароль</label>
         <input id="password" name="password" type="password" autocomplete="current-password" required>
-        <button type="submit">Log in</button>
+        <button type="submit">Войти</button>
       </form>
       <div class="login-error" id="login-error" style="display:none"></div>
 
@@ -23,21 +23,21 @@
         <hr style="border-color: var(--border); margin: 20px 0">
         <p class="sub" id="bootstrap-note" style="margin-bottom:10px"></p>
         <button class="secondary" id="bootstrap-toggle" style="width:100%">
-          Create a teacher account
+          Создать учётную запись преподавателя
         </button>
 
         <form id="bootstrap-form" style="display:none">
-          <label for="t-first">First name</label>
+          <label for="t-first">Имя</label>
           <input id="t-first" autocomplete="off" required>
-          <label for="t-last">Last name</label>
+          <label for="t-last">Фамилия</label>
           <input id="t-last" autocomplete="off" required>
-          <label for="t-username">Username (login)</label>
+          <label for="t-username">Логин</label>
           <input id="t-username" autocomplete="off" required>
-          <label for="t-email">Email</label>
+          <label for="t-email">Электронная почта</label>
           <input id="t-email" type="email" autocomplete="off" required>
-          <label for="t-password">Password</label>
+          <label for="t-password">Пароль</label>
           <input id="t-password" type="password" autocomplete="new-password" required>
-          <button type="submit">Create account and sign in</button>
+          <button type="submit">Создать и войти</button>
         </form>
         <div class="login-error" id="bootstrap-error" style="display:none"></div>
       </div>
