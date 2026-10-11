@@ -154,6 +154,54 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Test assignments: a list of questions the student answers in one sitting.
+-- Two kinds, set on the assignment: 'graded' has correct answers and is
+-- marked, 'survey' has none and is never scored (see assignments.test_kind).
+CREATE TABLE IF NOT EXISTS test_questions (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  assignment_id INTEGER NOT NULL REFERENCES assignments(id),
+  position      INTEGER NOT NULL,
+  kind          TEXT NOT NULL CHECK (kind IN ('single', 'multiple', 'open')),
+  body          TEXT NOT NULL,
+  -- Open questions only, and optional even there: with an expected answer the
+  -- question is checked automatically, without one it waits for the teacher.
+  expected_answer TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS test_options (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  question_id INTEGER NOT NULL REFERENCES test_questions(id),
+  position    INTEGER NOT NULL,
+  body        TEXT NOT NULL,
+  is_correct  INTEGER NOT NULL DEFAULT 0
+);
+
+-- One attempt per student per test. started_at is what the countdown runs
+-- from; submitted_at is set when the student hands it in or the time runs out.
+CREATE TABLE IF NOT EXISTS test_attempts (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  assignment_id INTEGER NOT NULL REFERENCES assignments(id),
+  student_id    INTEGER NOT NULL REFERENCES users(id),
+  -- UTC, like every other timestamp in this database. The window the test is
+  -- open in (available_from / deadline) is the other thing entirely: those
+  -- are local-time strings a teacher typed.
+  started_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  submitted_at  TEXT,
+  UNIQUE(assignment_id, student_id)
+);
+
+-- Answers are saved as the student works, so whatever is recorded here is
+-- what gets handed in when the clock stops.
+CREATE TABLE IF NOT EXISTS test_answers (
+  attempt_id  INTEGER NOT NULL REFERENCES test_attempts(id),
+  question_id INTEGER NOT NULL REFERENCES test_questions(id),
+  -- Chosen options as a comma-separated list of ids; empty for open answers.
+  option_ids  TEXT NOT NULL DEFAULT '',
+  text_answer TEXT NOT NULL DEFAULT '',
+  answered_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (attempt_id, question_id)
+);
+
 CREATE TABLE IF NOT EXISTS grades (
   assignment_id INTEGER NOT NULL REFERENCES assignments(id),
   student_id    INTEGER NOT NULL REFERENCES users(id),
@@ -264,6 +312,23 @@ for (const table of ["submission_files", "assignment_starter_files"]) {
   if (!columnNames(table).includes("encoding")) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN encoding TEXT NOT NULL DEFAULT 'text'`);
     console.log(`[db] migrated ${table}: added encoding`);
+  }
+}
+
+// Test assignments carry three extra settings:
+//   test_kind           'graded' (checked and marked) or 'survey' (neither)
+//   available_from      the test cannot be started before this; NULL means
+//                       "as soon as it exists" (assignments.deadline is the
+//                       other end of the window)
+//   time_limit_minutes  how long one attempt may last once started
+for (const [col, type] of [
+  ["test_kind", "TEXT"],
+  ["available_from", "TEXT"],
+  ["time_limit_minutes", "INTEGER"],
+]) {
+  if (!columnNames("assignments").includes(col)) {
+    db.exec(`ALTER TABLE assignments ADD COLUMN ${col} ${type}`);
+    console.log(`[db] migrated assignments table: added ${col}`);
   }
 }
 

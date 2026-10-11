@@ -20,8 +20,14 @@ router.get("/export.csv", requireLogin, requireRole("teacher"), (req, res) => {
     )
     .all();
 
+  // Surveys are never scored, so they have no column here - only tests that
+  // are actually marked, and every other kind of assignment.
   const assignments = db
-    .prepare("SELECT id, title, max_score AS maxScore FROM assignments ORDER BY created_at")
+    .prepare(
+      `SELECT id, title, max_score AS maxScore FROM assignments
+       WHERE type <> 'test' OR test_kind = 'graded'
+       ORDER BY created_at`
+    )
     .all();
 
   const grades = db.prepare("SELECT assignment_id, student_id, score FROM grades").all();
@@ -76,7 +82,7 @@ function normalizeScore(raw, maxScore) {
   const value = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isInteger(value) || value < MIN_SCORE || value > maxScore) {
     return {
-      error: `Score must be a whole number between ${MIN_SCORE} and ${maxScore}`,
+      error: `Балл должен быть целым числом от ${MIN_SCORE} до ${maxScore}`,
     };
   }
   return { value };
@@ -87,7 +93,7 @@ router.get("/assignment/:assignmentId", requireLogin, (req, res) => {
     req.session.user.role === "student"
       ? req.session.user.id
       : parseInt(req.query.studentId, 10);
-  if (!studentId) return res.status(400).json({ error: "studentId required" });
+  if (!studentId) return res.status(400).json({ error: "Не указан ученик" });
 
   const grade = db
     .prepare(
@@ -103,12 +109,12 @@ router.put(
   requireRole("teacher"),
   (req, res) => {
     const { studentId, score, feedback } = req.body;
-    if (!studentId) return res.status(400).json({ error: "studentId required" });
+    if (!studentId) return res.status(400).json({ error: "Не указан ученик" });
 
     const assignment = db
       .prepare("SELECT max_score FROM assignments WHERE id = ?")
       .get(req.params.assignmentId);
-    if (!assignment) return res.status(404).json({ error: "Assignment not found" });
+    if (!assignment) return res.status(404).json({ error: "Задание не найдено" });
 
     // The top mark depends on the student's study group, which may have its
     // own rule for this assignment.

@@ -28,7 +28,7 @@ class Limiter {
     if (this.waiting.length >= this.maxQueue) {
       return Promise.reject(
         new QueueFullError(
-          "The server is busy running other students' code. Try again in a moment."
+          "Сервер сейчас занят: выполняется код других учеников. Попробуйте через минуту."
         )
       );
     }

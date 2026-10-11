@@ -26,6 +26,16 @@ const MIN_MAX_SCORE = 1;
 const MAX_MAX_SCORE = 100;
 const DEFAULT_MAX_SCORE = 15;
 
+// A survey records answers but is never marked: no grade box, no column in
+// the gradebook export (see routes/grades.js).
+function isSurvey() {
+  return (
+    !!activeAssignment &&
+    activeAssignment.type === "test" &&
+    activeAssignment.test_kind === "survey"
+  );
+}
+
 // Top mark that applies right now. While one student's work is open it is
 // their study group's maximum (groups can have their own - see
 // assignmentRules.js); otherwise the assignment's own.
@@ -57,15 +67,33 @@ function byStudentName(a, b) {
 
 // Assignment kinds, mirrored from routes/assignments.js
 const ASSIGNMENT_TYPES = [
-  { value: "code", label: "Code", hint: "a Java project the student runs" },
-  { value: "text", label: "Text", hint: "a written answer, versioned the same way" },
-  { value: "freeform", label: "Free-form", hint: "the student attaches files" },
+  { value: "code", label: "Код", hint: "проект на Java, который ученик запускает" },
+  { value: "text", label: "Текст", hint: "письменный ответ, с теми же версиями" },
+  { value: "freeform", label: "Произвольное", hint: "ученик прикладывает файлы" },
+  { value: "test", label: "Тест", hint: "вопросы, на которые отвечают за один раз" },
 ];
 const TYPE_LABEL = {
-  code: "Code",
-  text: "Text",
-  freeform: "Free-form",
+  code: "Код",
+  text: "Текст",
+  freeform: "Произвольное",
+  test: "Тест",
 };
+
+// Test settings, mirrored from testing.js
+const TEST_QUESTION_KINDS = [
+  { value: "single", label: "Один правильный ответ" },
+  { value: "multiple", label: "Несколько правильных ответов" },
+  { value: "open", label: "Открытый ответ" },
+];
+const DEFAULT_TIME_LIMIT = 15;
+const MIN_TIME_LIMIT = 1;
+const MAX_TIME_LIMIT = 600;
+
+// The test being written in the form: [{ kind, body, expectedAnswer, options }]
+let testQuestions = [];
+// True while editing a test students have already started: the questions can
+// no longer change, only the dates, the time limit and the maximum mark.
+let testQuestionsFrozen = false;
 
 // Student attachment limits, mirrored from storage.js
 const MAX_STUDENT_FILES = 3;
@@ -92,10 +120,10 @@ async function api(path, opts = {}) {
   });
   if (res.status === 401) {
     window.location.href = "/login.html";
-    throw new Error("Not logged in");
+    throw new Error("Вы не авторизованы");
   }
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Request failed");
+  if (!res.ok) throw new Error(data.error || "Запрос не выполнен");
   return data;
 }
 
@@ -116,7 +144,7 @@ async function loadMe() {
   const { user } = await api("/api/auth/me");
   if (!user || user.role !== "teacher") { window.location.href = "/login.html"; return; }
   currentUser = user;
-  document.getElementById("whoami").textContent = `${user.displayName} (teacher)`;
+  document.getElementById("whoami").textContent = `${user.displayName} (преподаватель)`;
 }
 
 // ---------- Ungraded work indicator ----------
@@ -135,8 +163,8 @@ function reviewBadge(count, what) {
   if (!count) return "";
   const label =
     what === "assignment"
-      ? `${count} submission(s) waiting to be graded`
-      : `${count} submitted assignment(s) waiting to be graded`;
+      ? `Работ, ожидающих проверки: ${count}`
+      : `Сданных заданий, ожидающих проверки: ${count}`;
   return `<span class="needs-review" title="${label}">!</span>`;
 }
 
@@ -148,7 +176,7 @@ async function loadAssignments() {
   const container = document.getElementById("assignment-list");
   container.innerHTML = "";
   if (list.length === 0) {
-    container.innerHTML = '<p class="muted">No assignments yet.</p>';
+    container.innerHTML = '<p class="muted">Заданий пока нет.</p>';
     return;
   }
   list.forEach((a) => {
@@ -201,7 +229,7 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
     groupsError ||
     (Array.isArray(groups)
       ? null
-      : "the server did not return the list of study groups — it may still be running an older version (restart it), while the browser already has the new page");
+      : "сервер не вернул список учебных групп — возможно, он всё ещё работает на старой версии (перезапустите его), а браузер уже получил новую страницу");
   const ruleByGroup = new Map(
     ((editing && existing.groupRules) || []).map((rule) => [rule.groupName, rule])
   );
@@ -209,18 +237,18 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
   const main = document.getElementById("main-content");
   main.innerHTML = `
     <div class="card">
-      ${editing ? '<button class="secondary" id="cancel-edit-btn">← Back</button>' : ""}
+      ${editing ? '<button class="secondary" id="cancel-edit-btn">← Назад</button>' : ""}
       <h2 style="${editing ? "margin-top:10px" : ""}">${
-        editing ? "Edit assignment" : "New assignment"
+        editing ? "Редактирование задания" : "Новое задание"
       }</h2>
       <div class="form-row">
-        <label>Title</label>
-        <input id="a-title" placeholder="e.g. Loops: FizzBuzz" value="${
+        <label>Название</label>
+        <input id="a-title" placeholder="например: Циклы — FizzBuzz" value="${
           editing ? escapeHtml(assignment.title) : ""
         }">
       </div>
       <div class="form-row">
-        <label>Assignment type</label>
+        <label>Тип задания</label>
         <select id="a-type" ${editing ? "" : ""}>
           ${ASSIGNMENT_TYPES.map(
             (t) =>
@@ -231,56 +259,56 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
         </select>
         ${
           editing
-            ? '<span class="muted" style="font-size:12px">The type can only be changed while no student has started working.</span>'
+            ? '<span class="muted" style="font-size:12px">Тип можно изменить, только пока никто из учеников не начал работу.</span>'
             : ""
         }
       </div>
       <div class="form-row">
-        <label>Description / instructions</label>
-        <textarea id="a-desc" rows="4" placeholder="Explain the task...">${
+        <label>Описание и указания</label>
+        <textarea id="a-desc" rows="4" placeholder="Опишите задание…">${
           editing ? escapeHtml(assignment.description || "") : ""
         }</textarea>
       </div>
       <div class="form-row">
-        <label>Maximum score</label>
+        <label>Максимальный балл</label>
         <input type="number" id="a-max-score" min="${MIN_MAX_SCORE}" max="${MAX_MAX_SCORE}" step="1"
                value="${editing ? assignment.max_score : DEFAULT_MAX_SCORE}">
         <span class="muted" style="font-size:12px">
-          Whole number from ${MIN_MAX_SCORE} to ${MAX_MAX_SCORE}. The grade box
-          counts up to it for every group without its own value below.
+          Целое число от ${MIN_MAX_SCORE} до ${MAX_MAX_SCORE}. До него считает поле
+          оценки для всех групп, у которых ниже не задано своё значение.
         </span>
       </div>
       <div class="form-row">
-        <label>Deadline (optional)</label>
+        <label>Дедлайн (необязательно)</label>
         <input type="datetime-local" id="a-deadline" value="${
           editing && assignment.deadline
             ? escapeHtml(String(assignment.deadline).replace(" ", "T"))
             : ""
         }">
         <span class="muted" style="font-size:12px">
-          Students who haven't submitted are flagged once fewer than two days
-          remain. Applies to every group without its own date below.
+          Ученики, которые ещё не сдали, отмечаются, когда остаётся меньше двух
+          дней. Действует для всех групп, у которых ниже не задана своя дата.
         </span>
       </div>
       <div class="form-row">
-        <label>Per-group deadlines and scores (optional)</label>
+        <label>Сроки и баллы по группам (необязательно)</label>
         ${renderGroupRuleEditor(groups || [], ruleByGroup, groupsProblem)}
       </div>
       <div class="form-row" id="starter-code-row">
-        <label>Starter project</label>
+        <label>Стартовый проект</label>
         <span class="muted" style="font-size:12px">
-          The files a student's editor opens with. The one marked
-          <span class="entry-badge">main</span> is where their Run starts.
+          Файлы, с которыми открывается редактор ученика. Запуск начинается
+          с того, который помечен <span class="entry-badge">main</span>.
         </span>
         <div class="editor-layout" style="margin-top:6px">
           <div class="file-tree wide" style="height:260px">
-            <div class="file-tree-header">Files</div>
+            <div class="file-tree-header">Файлы</div>
             <div id="starter-file-list"></div>
             <div class="file-tree-actions">
-              <button class="secondary" id="starter-new-file-btn" type="button">+ New file</button>
+              <button class="secondary" id="starter-new-file-btn" type="button">+ Новый файл</button>
               <button class="secondary" id="starter-add-local-btn" type="button"
                       title="Взять файл с этого компьютера и выдать его вместе с заданием">
-                + Add local file
+                + Файл с компьютера
               </button>
             </div>
             <input type="file" id="starter-local-file-input" multiple hidden>
@@ -289,9 +317,9 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
         </div>
       </div>
       <div class="form-row" id="starter-text-row" style="display:none">
-        <label>Starting text (optional)</label>
+        <label>Начальный текст (необязательно)</label>
         <span class="muted" style="font-size:12px">
-          Text the student's answer box opens with — a template or a prompt.
+          Текст, с которым откроется поле ответа ученика — заготовка или подсказка.
         </span>
         <textarea id="a-starter-text" rows="6" style="margin-top:6px">${
           editing && assignment.type === "text"
@@ -299,33 +327,59 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
             : ""
         }</textarea>
       </div>
-      <div class="form-row" id="freeform-note-row" style="display:none">
-        <label>Student submissions</label>
+      <div class="form-row" id="test-row" style="display:none">
+        <label>Тест</label>
+        <div class="test-settings">
+          <label class="inline-label">Вид
+            <select id="t-kind">
+              <option value="graded">Обычный тест — с правильными ответами и оценкой</option>
+              <option value="survey">Тест-опрос — без правильных ответов и без оценки</option>
+            </select>
+          </label>
+          <label class="inline-label">Время на решение, мин
+            <input type="number" id="t-limit" min="${MIN_TIME_LIMIT}" max="${MAX_TIME_LIMIT}"
+                   step="1" value="${DEFAULT_TIME_LIMIT}">
+          </label>
+          <label class="inline-label">Доступен с (необязательно)
+            <input type="datetime-local" id="t-from">
+          </label>
+        </div>
         <span class="muted" style="font-size:12px">
-          Students attach up to ${MAX_STUDENT_FILES} files, ${MAX_STUDENT_MB} MB each.
-          Archives and programs (zip, rar, exe …) are refused. There is nothing
-          to prepare here.
+          Решать можно только между «доступен с» и дедлайном выше. Пустое «доступен с»
+          означает «сразу». Время на решение отсчитывается с того момента, когда ученик
+          открыл вопросы; когда оно выходит, ответы отправляются сами.
+        </span>
+        <div id="t-questions"></div>
+        <button class="secondary" id="t-add-question" type="button">+ Добавить вопрос</button>
+      </div>
+
+      <div class="form-row" id="freeform-note-row" style="display:none">
+        <label>Что сдают ученики</label>
+        <span class="muted" style="font-size:12px">
+          Ученики прикладывают до ${MAX_STUDENT_FILES} файлов, по ${MAX_STUDENT_MB} МБ каждый.
+          Архивы и программы (zip, rar, exe и подобные) не принимаются.
+          Готовить здесь ничего не нужно.
         </span>
       </div>
       ${
         editing
           ? `<div class="form-row">
-               <label>Current handouts</label>
+               <label>Прикреплённые методички</label>
                <div id="existing-handouts"></div>
              </div>`
           : ""
       }
       <div class="form-row">
-        <label>${editing ? "Add more handouts" : "Handouts (optional)"}</label>
+        <label>${editing ? "Добавить методички" : "Методички (необязательно)"}</label>
         <input type="file" id="a-files" multiple accept="${ALLOWED_UPLOAD_EXTENSIONS.join(",")}">
         <span class="muted" style="font-size:12px">
-          PDF, DOCX and similar documents — up to ${MAX_UPLOAD_MB} MB each,
-          ${MAX_UPLOAD_FILES} files max. Students can download them from the assignment.
+          PDF, DOCX и подобные документы — до ${MAX_UPLOAD_MB} МБ каждый,
+          не больше ${MAX_UPLOAD_FILES} файлов. Ученики смогут скачать их из задания.
         </span>
         <div id="a-files-list"></div>
       </div>
       <button id="create-assignment-btn">${
-        editing ? "Save changes" : "Create assignment"
+        editing ? "Сохранить изменения" : "Создать задание"
       }</button>
     </div>
   `;
@@ -335,6 +389,7 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
 
   // Only one of the three starter sections applies at a time.
   const typeSelect = document.getElementById("a-type");
+  const kindSelect = document.getElementById("t-kind");
   const applyTypeToForm = () => {
     const type = typeSelect.value;
     document.getElementById("starter-code-row").style.display =
@@ -343,8 +398,41 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
       type === "text" ? "" : "none";
     document.getElementById("freeform-note-row").style.display =
       type === "freeform" ? "" : "none";
+    document.getElementById("test-row").style.display = type === "test" ? "" : "none";
+    // A survey is never scored, so a maximum mark for it would mean nothing.
+    const scored = !(type === "test" && kindSelect.value === "survey");
+    document.getElementById("a-max-score").closest(".form-row").style.display = scored
+      ? ""
+      : "none";
+    if (type === "test") renderTestQuestions();
   };
   typeSelect.onchange = applyTypeToForm;
+  kindSelect.onchange = () => {
+    applyTypeToForm();
+    renderTestQuestions(); // correct-answer controls appear and disappear with the kind
+  };
+  document.getElementById("t-add-question").onclick = () => addTestQuestion();
+
+  // The test being edited, or a single empty question to start from. A test
+  // someone has already started keeps its questions as they are.
+  testQuestionsFrozen = editing && (existing.testAttempts || 0) > 0;
+  if (editing && assignment.type === "test") {
+    document.getElementById("t-kind").value = assignment.test_kind || "graded";
+    document.getElementById("t-limit").value =
+      assignment.time_limit_minutes || DEFAULT_TIME_LIMIT;
+    document.getElementById("t-from").value = assignment.available_from
+      ? String(assignment.available_from).replace(" ", "T")
+      : "";
+    testQuestions = (existing.questions || []).map((q) => ({
+      kind: q.kind,
+      body: q.body,
+      expectedAnswer: q.expectedAnswer || "",
+      options: (q.options || []).map((o) => ({ body: o.body, isCorrect: !!o.isCorrect })),
+    }));
+  } else {
+    testQuestions = [];
+  }
+  if (testQuestions.length === 0) addTestQuestion({ silent: true });
   applyTypeToForm();
 
   if (editing) {
@@ -382,12 +470,12 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
     const title = document.getElementById("a-title").value.trim();
     const description = document.getElementById("a-desc").value.trim();
     syncStarterTextarea();
-    if (!title) return alert("Title is required");
+    if (!title) return alert("Укажите название задания");
 
     const btn = document.getElementById("create-assignment-btn");
     const label = btn.textContent;
     btn.disabled = true;
-    btn.textContent = editing ? "Saving…" : "Creating…";
+    btn.textContent = editing ? "Сохранение…" : "Создание…";
     try {
       const files = await readFilesAsBase64(fileInput.files);
       const body = JSON.stringify({
@@ -402,6 +490,15 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
         deadline: document.getElementById("a-deadline").value,
         groupRules: collectGroupRules(),
         removeFileIds: removedHandoutIds,
+        ...(typeSelect.value === "test"
+          ? {
+              testKind: document.getElementById("t-kind").value,
+              timeLimitMinutes: Number(document.getElementById("t-limit").value),
+              availableFrom: document.getElementById("t-from").value,
+              // Omitted when frozen: the server then keeps the stored ones.
+              ...(testQuestionsFrozen ? {} : { questions: collectTestQuestions() }),
+            }
+          : {}),
       });
 
       const result = editing
@@ -412,7 +509,7 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
       selectAssignment(result.assignment);
     } catch (err) {
       alert(
-        (editing ? "Could not save the assignment: " : "Could not create assignment: ") +
+        (editing ? "Не удалось сохранить задание: " : "Не удалось создать задание: ") +
           err.message
       );
       btn.disabled = false;
@@ -421,13 +518,227 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
   };
 }
 
+
+// ---------- The question builder in the assignment form ----------
+//
+// testQuestions is the form's own copy of the test. The DOM is rebuilt from
+// it on every change, which keeps "what is on screen" and "what will be sent"
+// the same thing.
+
+function currentTestKind() {
+  const select = document.getElementById("t-kind");
+  return select ? select.value : "graded";
+}
+
+function addTestQuestion({ silent = false } = {}) {
+  // Read the form back first: everything below is rebuilt from
+  // testQuestions, so whatever has been typed since the last render would
+  // otherwise be thrown away by the re-render.
+  if (!silent) syncTestQuestions();
+  testQuestions.push({
+    kind: "single",
+    body: "",
+    expectedAnswer: "",
+    options: [
+      { body: "", isCorrect: false },
+      { body: "", isCorrect: false },
+    ],
+  });
+  if (!silent) renderTestQuestions();
+}
+
+// Reads the inputs back into testQuestions. Called before any re-render, so
+// typing is never lost when a control is added or removed.
+function syncTestQuestions() {
+  const box = document.getElementById("t-questions");
+  if (!box || testQuestionsFrozen) return;
+  box.querySelectorAll(".test-question").forEach((node) => {
+    const index = Number(node.dataset.index);
+    const question = testQuestions[index];
+    if (!question) return;
+    question.kind = node.querySelector(".tq-kind").value;
+    question.body = node.querySelector(".tq-body").value;
+    const expected = node.querySelector(".tq-expected");
+    if (expected) question.expectedAnswer = expected.value;
+    question.options = Array.from(node.querySelectorAll(".tq-option")).map((row) => ({
+      body: row.querySelector(".tq-option-body").value,
+      isCorrect: row.querySelector(".tq-correct")
+        ? row.querySelector(".tq-correct").checked
+        : false,
+    }));
+  });
+}
+
+function collectTestQuestions() {
+  syncTestQuestions();
+  return testQuestions;
+}
+
+function renderTestQuestions() {
+  const box = document.getElementById("t-questions");
+  if (!box) return;
+  const graded = currentTestKind() === "graded";
+
+  box.innerHTML = "";
+  // Changing a question under a student who has already answered it would
+  // leave their answer attached to something else entirely, so a test that
+  // has been started is shown as it stands.
+  const addButton = document.getElementById("t-add-question");
+  if (testQuestionsFrozen) {
+    if (addButton) addButton.hidden = true;
+    box.innerHTML = `
+      <div class="form-message error">
+        Ученики уже начали проходить тест — вопросы изменить нельзя.
+        Сроки, время на решение и максимальный балл поменять можно.
+      </div>
+      ${testQuestions
+        .map(
+          (question, index) => `
+        <div class="test-question">
+          <div class="tq-head">
+            <span class="tq-number">${index + 1}</span>
+            <span class="muted">${
+              (TEST_QUESTION_KINDS.find((k) => k.value === question.kind) || {}).label || ""
+            }</span>
+          </div>
+          <div class="test-question-body">${escapeHtml(question.body)}</div>
+          ${
+            question.options.length > 0
+              ? `<ul class="test-answer-options">${question.options
+                  .map(
+                    (option) =>
+                      `<li class="${option.isCorrect ? "is-correct" : ""}">${escapeHtml(
+                        option.body
+                      )}</li>`
+                  )
+                  .join("")}</ul>`
+              : question.expectedAnswer
+                ? `<div class="muted">Ожидается: ${escapeHtml(question.expectedAnswer)}</div>`
+                : ""
+          }
+        </div>`
+        )
+        .join("")}`;
+    return;
+  }
+  if (addButton) addButton.hidden = false;
+
+  testQuestions.forEach((question, index) => {
+    const node = document.createElement("div");
+    node.className = "test-question";
+    node.dataset.index = index;
+
+    const options =
+      question.kind === "open"
+        ? ""
+        : `<div class="tq-options">${question.options
+            .map(
+              (option, optionIndex) => `
+          <div class="tq-option">
+            ${
+              graded
+                ? `<input type="${question.kind === "single" ? "radio" : "checkbox"}"
+                         class="tq-correct" name="correct-${index}"
+                         ${option.isCorrect ? "checked" : ""}
+                         title="Правильный ответ">`
+                : ""
+            }
+            <input class="tq-option-body" value="${escapeHtml(option.body)}"
+                   placeholder="Вариант ${optionIndex + 1}">
+            <button type="button" class="delete-file tq-remove-option"
+                    data-option="${optionIndex}" title="Убрать вариант">×</button>
+          </div>`
+            )
+            .join("")}
+          <button type="button" class="secondary tq-add-option">+ Вариант</button>
+        </div>`;
+
+    node.innerHTML = `
+      <div class="tq-head">
+        <span class="tq-number">${index + 1}</span>
+        <select class="tq-kind">
+          ${TEST_QUESTION_KINDS.map(
+            (k) =>
+              `<option value="${k.value}"${
+                question.kind === k.value ? " selected" : ""
+              }>${k.label}</option>`
+          ).join("")}
+        </select>
+        <button type="button" class="delete-file tq-remove" title="Удалить вопрос">×</button>
+      </div>
+      <textarea class="tq-body" rows="2" placeholder="Текст вопроса">${escapeHtml(
+        question.body
+      )}</textarea>
+      ${options}
+      ${
+        question.kind === "open" && graded
+          ? `<input class="tq-expected" value="${escapeHtml(question.expectedAnswer)}"
+                   placeholder="Ожидаемый ответ (необязательно — без него вопрос проверяете вы)">`
+          : ""
+      }`;
+
+    box.appendChild(node);
+  });
+
+  // One handler per control, each syncing first so nothing typed is lost.
+  box.querySelectorAll(".tq-kind").forEach((select) => {
+    select.onchange = () => {
+      syncTestQuestions();
+      const question = testQuestions[Number(select.closest(".test-question").dataset.index)];
+      // Switching to a choice question needs something to choose between.
+      if (question.kind !== "open" && question.options.length < 2) {
+        question.options = [
+          { body: "", isCorrect: false },
+          { body: "", isCorrect: false },
+        ];
+      }
+      renderTestQuestions();
+    };
+  });
+  box.querySelectorAll(".tq-remove").forEach((button) => {
+    button.onclick = () => {
+      syncTestQuestions();
+      testQuestions.splice(Number(button.closest(".test-question").dataset.index), 1);
+      if (testQuestions.length === 0) addTestQuestion({ silent: true });
+      renderTestQuestions();
+    };
+  });
+  box.querySelectorAll(".tq-add-option").forEach((button) => {
+    button.onclick = () => {
+      syncTestQuestions();
+      testQuestions[Number(button.closest(".test-question").dataset.index)].options.push({
+        body: "",
+        isCorrect: false,
+      });
+      renderTestQuestions();
+    };
+  });
+  box.querySelectorAll(".tq-remove-option").forEach((button) => {
+    button.onclick = () => {
+      syncTestQuestions();
+      const question = testQuestions[Number(button.closest(".test-question").dataset.index)];
+      if (question.options.length <= 2) {
+        alert("В вопросе с выбором должно остаться хотя бы два варианта.");
+        return;
+      }
+      question.options.splice(Number(button.dataset.option), 1);
+      renderTestQuestions();
+    };
+  });
+  // A single-choice question has radio buttons, which already clear each
+  // other; the checkboxes of a multiple-choice one need nothing.
+  box.querySelectorAll(".tq-correct").forEach((input) => {
+    input.onchange = () => syncTestQuestions();
+  });
+}
+
 // Handouts already attached to the assignment being edited, with a way to
 // mark them for removal. Nothing is deleted until the form is saved.
 function renderExistingHandouts() {
   const box = document.getElementById("existing-handouts");
   if (!box) return;
   if (existingHandouts.length === 0) {
-    box.innerHTML = '<p class="muted" style="font-size:12px">No handouts attached.</p>';
+    box.innerHTML = '<p class="muted" style="font-size:12px">Методички не прикреплены.</p>';
     return;
   }
   box.innerHTML = "";
@@ -445,7 +756,7 @@ function renderExistingHandouts() {
     btn.type = "button";
     btn.style.padding = "2px 8px";
     btn.style.fontSize = "12px";
-    btn.textContent = marked ? "Keep" : "Remove";
+    btn.textContent = marked ? "Вернуть" : "Убрать";
     btn.onclick = () => {
       removedHandoutIds = marked
         ? removedHandoutIds.filter((id) => id !== file.id)
@@ -531,7 +842,7 @@ function downloadProjectFile(file) {
 function appendDataControls(div, file) {
   const badge = document.createElement("span");
   badge.className = "data-badge" + (isBinaryFile(file) ? " binary" : "");
-  badge.textContent = isBinaryFile(file) ? "bin" : "data";
+  badge.textContent = isBinaryFile(file) ? "двоич." : "данные";
   badge.title = `${file.filename} — ${formatSize(fileSizeOf(file))}${
     isBinaryFile(file) ? ", двоичный файл" : ""
   }`;
@@ -588,7 +899,7 @@ function renderStarterTree() {
       const badge = document.createElement("span");
       badge.className = "entry-badge";
       badge.textContent = "main";
-      badge.title = "The student's Run starts from this file";
+      badge.title = "С этого файла начинается запуск у ученика";
       div.appendChild(badge);
     } else {
       // Unlike the student's editor, the entry file here is chosen explicitly -
@@ -598,8 +909,8 @@ function renderStarterTree() {
         const setEntry = document.createElement("button");
         setEntry.className = "set-entry";
         setEntry.type = "button";
-        setEntry.textContent = "set main";
-        setEntry.title = "Make this the file the student's Run starts from";
+        setEntry.textContent = "сделать main";
+        setEntry.title = "Сделать файлом, с которого начинается запуск";
         setEntry.onclick = (e) => {
           e.stopPropagation();
           starterEntry = file.filename;
@@ -612,7 +923,7 @@ function renderStarterTree() {
       del.className = "delete-file";
       del.type = "button";
       del.textContent = "×";
-      del.title = "Remove file";
+      del.title = "Убрать файл";
       del.onclick = (e) => {
         e.stopPropagation();
         removeStarterFile(file.filename);
@@ -626,7 +937,7 @@ function renderStarterTree() {
 
 function addStarterFile() {
   const raw = prompt(
-    "New file name — Helper.java for code, input.txt for data:",
+    "Имя нового файла — Helper.java для кода, input.txt для данных:",
     "Helper.java"
   );
   if (!raw) return;
@@ -636,7 +947,7 @@ function addStarterFile() {
   const isJava = isJavaFile(filename);
   if (isJava && !JAVA_FILENAME.test(filename)) {
     alert(
-      "A Java file name must start with a letter or underscore, contain only letters, digits and underscores, and end with .java — for example Helper.java"
+      "Имя файла Java должно начинаться с буквы или подчёркивания, содержать только буквы, цифры и подчёркивания и оканчиваться на .java — например Helper.java"
     );
     return;
   }
@@ -645,7 +956,7 @@ function addStarterFile() {
     return;
   }
   if (starterFiles.some((f) => f.filename === filename)) {
-    alert(`"${filename}" already exists in this starter project.`);
+    alert(`Файл «${filename}» уже есть в стартовом проекте.`);
     return;
   }
 
@@ -679,7 +990,7 @@ async function onStarterLocalFilesChosen(event) {
     const filename = file.name;
     if (isJavaFile(filename)) {
       if (!JAVA_FILENAME.test(filename)) {
-        alert(`"${filename}" — недопустимое имя для файла Java.`);
+        alert(`«${filename}» — недопустимое имя для файла Java.`);
         continue;
       }
     } else if (!isAllowedDataName(filename)) {
@@ -778,7 +1089,7 @@ function readFilesAsBase64(fileList) {
         new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve({ name: file.name, data: reader.result });
-          reader.onerror = () => reject(new Error(`Could not read "${file.name}"`));
+          reader.onerror = () => reject(new Error(`Не удалось прочитать «${file.name}»`));
           reader.readAsDataURL(file);
         })
     )
@@ -797,7 +1108,7 @@ function renderFileLinks(assignmentId, files) {
          </div>`
     )
     .join("");
-  return `<div class="file-list"><h4>Handouts</h4>${items}</div>`;
+  return `<div class="file-list"><h4>Методички</h4>${items}</div>`;
 }
 
 async function selectAssignment(assignment) {
@@ -825,24 +1136,30 @@ async function renderOverview() {
       <p class="muted">
         ${
           activeAssignment.deadline
-            ? `Deadline: <strong>${escapeHtml(
+            ? `Дедлайн: <strong>${escapeHtml(
                 formatDeadline(activeAssignment.deadline)
               )}</strong> · `
-            : "No deadline · "
-        }max score: <strong>${currentMaxScore()}</strong>
+            : "Без дедлайна · "
+        }максимальный балл: <strong>${currentMaxScore()}</strong>
       </p>
       ${renderGroupRuleSummary(groupRules)}
       ${renderFileLinks(activeAssignment.id, files)}
       <div class="toolbar">
-        <button class="secondary" id="edit-assignment-btn">Edit assignment</button>
-        <button class="secondary danger" id="delete-assignment-btn">Delete assignment</button>
+        <button class="secondary" id="edit-assignment-btn">Редактировать</button>
+        <button class="secondary danger" id="delete-assignment-btn">Удалить задание</button>
       </div>
     </div>
     <div class="card">
-      <h3>Student submissions</h3>
+      <h3>Работы учеников</h3>
       <table>
         <thead>
-          <tr><th>Student</th><th>Group</th><th>Latest version</th><th>Status</th><th>Last activity</th><th>Grade</th></tr>
+          <tr><th>Ученик</th><th>Группа</th><th>${
+            activeAssignment.type === "test"
+              ? "Результат"
+              : activeAssignment.type === "freeform"
+                ? "Файлы"
+                : "Последняя версия"
+          }</th><th>Статус</th><th>Активность</th><th>Оценка</th></tr>
         </thead>
         <tbody id="student-rows"></tbody>
       </table>
@@ -853,15 +1170,20 @@ async function renderOverview() {
 
   const tbody = document.getElementById("student-rows");
   if (roster.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="muted">No students yet — add some in the sidebar.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">Учеников пока нет — добавьте их на панели слева.</td></tr>';
     return;
   }
   const isFreeform = activeAssignment.type === "freeform";
+  const isTest = activeAssignment.type === "test";
 
   // Work that is waiting to be looked at comes first: handed in, then started
   // but not handed in, then untouched - each block alphabetical by surname.
   const handInRank = (s) => {
     if (isFreeform) return s.fileCount > 0 ? 0 : 2;
+    if (isTest) {
+      const state = s.test ? s.test.state : "not-started";
+      return state === "submitted" ? 0 : state === "in-progress" ? 1 : 2;
+    }
     if (s.status === "submitted") return 0;
     return s.status ? 1 : 2;
   };
@@ -869,8 +1191,19 @@ async function renderOverview() {
 
   roster.forEach((s) => {
     // Free-form work has no versions - what a student has is a set of files.
-    const handedIn = isFreeform ? s.fileCount > 0 : !!s.status;
+    const testState = s.test ? s.test.state : null;
+    const handedIn = isFreeform
+      ? s.fileCount > 0
+      : isTest
+        ? testState === "submitted"
+        : !!s.status;
     const activity = isFreeform ? s.lastUpload : s.lastActivity;
+    // A test's timestamps come from the database in UTC.
+    const activityText = activity
+      ? new Date(
+          isTest ? `${String(activity).replace(" ", "T")}Z` : activity
+        ).toLocaleString()
+      : "—";
     const tr = document.createElement("tr");
     tr.className = "student-row";
     tr.innerHTML = `
@@ -881,18 +1214,26 @@ async function renderOverview() {
           ? s.fileCount
             ? `${s.fileCount} file${s.fileCount > 1 ? "s" : ""}`
             : "—"
-          : s.latestVersion
-            ? "v" + s.latestVersion
-            : "—"
+          : isTest
+            ? testSummaryCell(s)
+            : s.latestVersion
+              ? "v" + s.latestVersion
+              : "—"
       }</td>
       <td>${
-        handedIn
-          ? `<span class="badge ${isFreeform ? "submitted" : s.status}">${
-              isFreeform ? "attached" : s.status
-            }</span>`
-          : '<span class="badge">not started</span>'
+        isTest
+          ? testState === "submitted"
+            ? '<span class="badge submitted">сдан</span>'
+            : testState === "in-progress"
+              ? '<span class="badge draft">выполняется</span>'
+              : '<span class="badge">не начат</span>'
+          : handedIn
+            ? `<span class="badge ${isFreeform ? "submitted" : s.status}">${
+                isFreeform ? "приложено" : versionStatusLabel(s.status)
+              }</span>`
+            : '<span class="badge">не начато</span>'
       }</td>
-      <td class="muted">${activity ? new Date(activity).toLocaleString() : "—"}</td>
+      <td class="muted">${activityText}</td>
       <td>${
         s.score !== null && s.score !== undefined
           ? `${s.score} / ${s.maxScore ?? currentMaxScore()}`
@@ -902,6 +1243,19 @@ async function renderOverview() {
     tr.onclick = () => selectStudent(s.studentId, studentName(s), s.maxScore);
     tbody.appendChild(tr);
   });
+}
+
+// How a test came out, for the overview table: right answers out of the
+// total on a graded test, how much was answered on a survey.
+function testSummaryCell(row) {
+  const test = row.test;
+  if (!test || !test.summary || test.state === "not-started") return "—";
+  const summary = test.summary;
+  if (activeAssignment.test_kind === "survey") {
+    return `${summary.answered} / ${summary.total}`;
+  }
+  const manual = summary.manual > 0 ? ` <span class="muted">+${summary.manual}?</span>` : "";
+  return `${summary.correct} / ${summary.total}${manual}`;
 }
 
 // ---------- Per-group deadlines and maximum scores ----------
@@ -914,13 +1268,13 @@ function renderGroupRuleEditor(groups, ruleByGroup, problem) {
   // "the list could not be read" is a fault worth naming.
   if (problem) {
     return `<div class="form-message error">
-        Could not load the study groups: ${escapeHtml(problem)}.
+        Не удалось загрузить учебные группы: ${escapeHtml(problem)}.
       </div>`;
   }
   if (groups.length === 0) {
     return `<span class="muted" style="font-size:12px">
-        There are no study groups yet. Add students with a group and you can
-        give each group its own deadline and maximum score here.
+        Учебных групп пока нет. Добавьте учеников с указанием группы — и здесь
+        можно будет задать каждой группе свой срок и свой максимальный балл.
       </span>`;
   }
 
@@ -943,10 +1297,10 @@ function renderGroupRuleEditor(groups, ruleByGroup, problem) {
     .join("");
 
   return `<span class="muted" style="font-size:12px">
-        Leave a field empty to keep the assignment's own value for that group.
+        Пустое поле означает, что для группы действует общее значение задания.
       </span>
       <table class="group-rules">
-        <thead><tr><th>Study group</th><th>Deadline</th><th>Max score</th></tr></thead>
+        <thead><tr><th>Учебная группа</th><th>Дедлайн</th><th>Макс. балл</th></tr></thead>
         <tbody id="group-rules-body">${rows}</tbody>
       </table>`;
 }
@@ -968,17 +1322,17 @@ function renderGroupRuleSummary(groupRules) {
   const lines = groupRules
     .map((rule) => {
       const deadline = rule.deadline
-        ? `deadline ${escapeHtml(formatDeadline(rule.deadline))}`
-        : "same deadline";
+        ? `срок ${escapeHtml(formatDeadline(rule.deadline))}`
+        : "срок общий";
       const max =
         rule.maxScore !== null && rule.maxScore !== undefined
-          ? `max score ${rule.maxScore}`
-          : "same max score";
+          ? `макс. балл ${rule.maxScore}`
+          : "макс. балл общий";
       return `<li><strong>${escapeHtml(rule.groupName)}</strong> — ${deadline}, ${max}</li>`;
     })
     .join("");
   return `<div class="group-rules-summary">
-      <span class="muted">Group exceptions:</span>
+      <span class="muted">Исключения по группам:</span>
       <ul>${lines}</ul>
     </div>`;
 }
@@ -989,7 +1343,7 @@ async function editActiveAssignment() {
     const existing = await api(`/api/assignments/${activeAssignment.id}`);
     renderAssignmentForm(existing);
   } catch (err) {
-    alert("Could not open the assignment for editing: " + err.message);
+    alert("Не удалось открыть задание для редактирования: " + err.message);
   }
 }
 
@@ -999,20 +1353,23 @@ async function deleteActiveAssignment() {
   try {
     impact = await api(`/api/assignments/${assignment.id}/impact`);
   } catch (err) {
-    return alert("Could not check what would be deleted: " + err.message);
+    return alert("Не удалось проверить, что будет удалено: " + err.message);
   }
 
   // Spell out what goes with it - this cannot be undone from the UI.
   const lines = [
-    `Delete "${assignment.title}"?`,
+    `Удалить задание «${assignment.title}»?`,
     "",
-    "This also deletes, for every student:",
-    `  • ${impact.submissions} saved version(s) from ${impact.students} student(s)`,
-    `  • ${impact.grades} grade(s)`,
-    `  • ${impact.messages} discussion message(s)`,
-    "  • the starter project and any handouts",
+    "Вместе с ним у всех учеников удалятся:",
+    `  • сохранённых версий: ${impact.submissions} (учеников: ${impact.students})`,
+    `  • оценок: ${impact.grades}`,
+    `  • сообщений в обсуждениях: ${impact.messages}`,
+    ...(impact.testAttempts
+      ? [`  • пройденных тестов: ${impact.testAttempts} (вопросы и ответы)`]
+      : []),
+    "  • стартовый проект и все методички",
     "",
-    "This cannot be undone.",
+    "Отменить это будет нельзя.",
   ];
   if (!confirm(lines.join("\n"))) return;
 
@@ -1023,11 +1380,11 @@ async function deleteActiveAssignment() {
     await loadPendingReview();
     await loadAssignments();
     document.getElementById("main-content").innerHTML =
-      `<div class="card"><p class="muted">Assignment "${escapeHtml(
+      `<div class="card"><p class="muted">Задание «${escapeHtml(
         assignment.title
-      )}" was deleted.</p></div>`;
+      )}» удалено.</p></div>`;
   } catch (err) {
-    alert("Could not delete the assignment: " + err.message);
+    alert("Не удалось удалить задание: " + err.message);
   }
 }
 
@@ -1040,68 +1397,78 @@ async function selectStudent(studentId, displayName, maxScore) {
   activeVersion = null;
   renderStudentPanel();
   await Promise.all([
-    activeAssignment.type === "freeform" ? loadStudentUploads() : loadVersions(),
+    activeAssignment.type === "freeform"
+      ? loadStudentUploads()
+      : activeAssignment.type === "test"
+        ? loadTestAttempt()
+        : loadVersions(),
     loadDiscussion(),
-    loadGrade(),
+    // A survey is never scored, so there is no grade box to fill.
+    isSurvey() ? Promise.resolve() : loadGrade(),
   ]);
 }
 
 function renderStudentPanel() {
   const main = document.getElementById("main-content");
   main.innerHTML = `
-    <button class="secondary" id="back-to-overview">← Back to overview</button>
+    <button class="secondary" id="back-to-overview">← Ко всем ученикам</button>
     <div class="card" style="margin-top:10px">
       <h2>${escapeHtml(activeStudent.displayName)} — ${escapeHtml(activeAssignment.title)}</h2>
     </div>
 
     ${
-      activeAssignment.type === "freeform"
+      activeAssignment.type === "test"
         ? `<div class="card">
-             <h3>Attached files</h3>
-             <div id="student-uploads"><p class="muted">Loading…</p></div>
+             <h3>${isSurvey() ? "Ответы опроса" : "Результат теста"}</h3>
+             <div id="test-review"><p class="muted">Загрузка…</p></div>
+           </div>`
+        : activeAssignment.type === "freeform"
+        ? `<div class="card">
+             <h3>Приложенные файлы</h3>
+             <div id="student-uploads"><p class="muted">Загрузка…</p></div>
            </div>`
         : `<div class="card">
-             <h3>Version history</h3>
-             <div class="version-list" id="version-list"><p class="muted">Loading…</p></div>
+             <h3>История версий</h3>
+             <div class="version-list" id="version-list"><p class="muted">Загрузка…</p></div>
            </div>
 
            <div class="card">
-             <h3>${activeAssignment.type === "text" ? "Answer" : "Code"}</h3>
+             <h3>${activeAssignment.type === "text" ? "Ответ" : "Код"}</h3>
              ${
                activeAssignment.type === "text"
-                 ? '<div class="text-view" id="text-view">Select a version to read it.</div>'
+                 ? '<div class="text-view" id="text-view">Выберите версию, чтобы прочитать ответ.</div>'
                  : `<div class="editor-layout" id="editor-layout">
                       <div class="file-tree">
-                        <div class="file-tree-header">Project</div>
+                        <div class="file-tree-header">Проект</div>
                         <div id="file-list"><p class="muted" style="font-size:12px">—</p></div>
                       </div>
                       <div class="editor-wrap" id="editor-container"></div>
                       <div class="binary-note" id="binary-note" hidden></div>
                     </div>
                     <div id="stdin-used"></div>
-                    <div class="output-panel" id="output-panel">Select a version to view its output.</div>`
+                    <div class="output-panel" id="output-panel">Выберите версию, чтобы увидеть вывод программы.</div>`
              }
            </div>`
     }
 
-    <div class="card">
-      <h3>Grade</h3>
+    <div class="card"${isSurvey() ? ' hidden' : ""}>
+      <h3>Оценка</h3>
       <div class="grade-box">
-        <label class="muted">Score (0–${currentMaxScore()}):</label>
+        <label class="muted">Балл (0–${currentMaxScore()}):</label>
         <!-- No min/max on purpose: they would stop the stepper dead at the
              bounds, and we want it to wrap around instead. The range is
              enforced in wrapScore(), in saveGrade() and on the server. -->
         <input type="number" id="grade-score" step="1" value="${currentMaxScore()}">
-        <button id="save-grade-btn">Save grade</button>
+        <button id="save-grade-btn">Сохранить оценку</button>
       </div>
     </div>
 
     <div class="card">
-      <h3>Discussion</h3>
+      <h3>Обсуждение</h3>
       <div class="discussion" id="discussion-list"></div>
       <div class="toolbar">
-        <input id="message-input" placeholder="Write feedback or a question…" style="flex:1">
-        <button id="send-message-btn">Send</button>
+        <input id="message-input" placeholder="Напишите отзыв или вопрос…" style="flex:1">
+        <button id="send-message-btn">Отправить</button>
       </div>
     </div>
   `;
@@ -1130,7 +1497,7 @@ async function loadStudentUploads() {
       `/api/uploads/assignment/${activeAssignment.id}?studentId=${activeStudent.studentId}`
     );
     if (files.length === 0) {
-      box.innerHTML = '<p class="muted">This student hasn\'t attached anything yet.</p>';
+      box.innerHTML = '<p class="muted">Ученик пока ничего не приложил.</p>';
       return;
     }
     box.innerHTML = files
@@ -1144,7 +1511,7 @@ async function loadStudentUploads() {
       )
       .join("");
   } catch (err) {
-    box.innerHTML = `<p class="muted">Could not load the files: ${escapeHtml(err.message)}</p>`;
+    box.innerHTML = `<p class="muted">Не удалось загрузить файлы: ${escapeHtml(err.message)}</p>`;
   }
 }
 
@@ -1173,7 +1540,7 @@ async function loadVersions() {
   const list = document.getElementById("version-list");
   if (!list) return;
   if (versions.length === 0) {
-    list.innerHTML = '<p class="muted">This student hasn\'t saved any code yet.</p>';
+    list.innerHTML = '<p class="muted">Ученик пока ничего не сохранял.</p>';
     return;
   }
   list.innerHTML = "";
@@ -1182,7 +1549,9 @@ async function loadVersions() {
     div.className = "version-item" + (activeVersion && activeVersion.id === v.id ? " active" : "");
     // The student may have named the version; show that name next to its number.
     const name = v.title ? ` «${v.title}»` : "";
-    div.textContent = `v${v.version_number}${name} — ${v.status} — ${new Date(v.created_at).toLocaleString()}`;
+    div.textContent = `v${v.version_number}${name} — ${versionStatusLabel(
+      v.status
+    )} — ${new Date(v.created_at).toLocaleString()}`;
     div.onclick = () => openVersion(v);
     list.appendChild(div);
     if (idx === 0 && !activeVersion) div.click(); // auto-select latest
@@ -1268,7 +1637,7 @@ function renderViewerTree() {
       const badge = document.createElement("span");
       badge.className = "entry-badge";
       badge.textContent = "main";
-      badge.title = "The student ran the program from this file";
+      badge.title = "С этого файла ученик запускал программу";
       div.appendChild(badge);
     }
     div.onclick = () => showFile(file.filename);
@@ -1299,11 +1668,124 @@ function renderOutput(stdout, stderr, status) {
   panel.innerHTML = "";
   const statusLine = document.createElement("div");
   statusLine.className = "status-line";
-  statusLine.textContent = `Status: ${status || "—"}`;
+  statusLine.textContent = `Статус: ${runStatusLabel(status)}`;
   panel.appendChild(statusLine);
   const pre = document.createElement("div");
   pre.textContent = (stdout || "") + (stderr ? "\n" + stderr : "") || "(no output)";
   panel.appendChild(pre);
+}
+
+
+// ---------- Reviewing a test ----------
+//
+// A test has no versions and no code: what the teacher needs is how it came
+// out, then the answers themselves. The tally comes first, because that is
+// what the mark is usually based on - the mark itself is still theirs to
+// choose, out of the maximum they set for the assignment.
+
+function renderTestSummary(summary, testKind) {
+  if (testKind === "survey") {
+    return `<p class="muted">Опрос: правильных ответов нет, оценка не выставляется.
+      Отвечено ${summary.answered} из ${summary.total}.</p>`;
+  }
+  const line = (label, count, percent, cls) => `
+    <div class="test-stat ${cls}">
+      <span class="test-stat-value">${count} из ${summary.total}</span>
+      <span class="test-stat-percent">${percent}%</span>
+      <span class="test-stat-label">${label}</span>
+    </div>`;
+  return `
+    <div class="test-stats">
+      ${line("правильных ответов", summary.correct, summary.percentCorrect, "correct")}
+      ${line("неправильных ответов", summary.incorrect, summary.percentIncorrect, "incorrect")}
+      ${line("требуют ручной проверки", summary.manual, summary.percentManual, "manual")}
+    </div>`;
+}
+
+const VERDICT_LABEL = {
+  correct: "верно",
+  incorrect: "неверно",
+  manual: "проверьте сами",
+  none: "ответ",
+};
+
+function renderTestAnswer(question, index) {
+  const given = question.given;
+  let answerHtml;
+  if (question.kind === "open") {
+    answerHtml = given.textAnswer.trim()
+      ? `<div class="test-answer-text">${escapeHtml(given.textAnswer)}</div>`
+      : '<div class="test-answer-text muted">нет ответа</div>';
+  } else {
+    answerHtml = `<ul class="test-answer-options">${question.options
+      .map((option) => {
+        const chosen = given.optionIds.includes(option.id);
+        const marks = [];
+        if (chosen) marks.push("выбрано");
+        if (option.isCorrect) marks.push("правильный");
+        return `<li class="${chosen ? "chosen" : ""}${option.isCorrect ? " is-correct" : ""}">
+            ${escapeHtml(option.body)}${
+              marks.length ? ` <span class="muted">(${marks.join(", ")})</span>` : ""
+            }</li>`;
+      })
+      .join("")}</ul>`;
+  }
+
+  const expected =
+    question.kind === "open" && (question.expectedAnswer || "").trim()
+      ? `<div class="muted" style="font-size:12px">Ожидался: ${escapeHtml(
+          question.expectedAnswer
+        )}</div>`
+      : "";
+
+  return `
+    <div class="test-review-question verdict-${question.verdict}">
+      <div class="test-review-head">
+        <span class="tq-number">${index + 1}</span>
+        <span class="test-verdict ${question.verdict}">${VERDICT_LABEL[question.verdict]}</span>
+      </div>
+      <div class="test-review-body">${escapeHtml(question.body)}</div>
+      ${answerHtml}
+      ${expected}
+    </div>`;
+}
+
+async function loadTestAttempt() {
+  const box = document.getElementById("test-review");
+  if (!box) return;
+  let data;
+  try {
+    data = await api(
+      `/api/tests/assignment/${activeAssignment.id}/attempt?studentId=${activeStudent.studentId}`
+    );
+  } catch (err) {
+    box.innerHTML = `<p class="muted">Не удалось загрузить тест: ${escapeHtml(
+      err.message
+    )}</p>`;
+    return;
+  }
+
+  if (data.state === "not-started") {
+    box.innerHTML = '<p class="muted">Ученик ещё не открывал тест.</p>';
+    return;
+  }
+
+  const when = (value) =>
+    value ? new Date(`${String(value).replace(" ", "T")}Z`).toLocaleString() : "—";
+
+  box.innerHTML = `
+    <p class="muted">
+      Начат: ${when(data.startedAt)} ·
+      ${
+        data.state === "submitted"
+          ? `сдан: ${when(data.submittedAt)}`
+          : `выполняется, ${data.timeLimitMinutes} мин на решение`
+      }
+    </p>
+    ${renderTestSummary(data.summary, data.testKind)}
+    <div class="test-review-list">
+      ${data.questions.map(renderTestAnswer).join("")}
+    </div>`;
 }
 
 // ---------- Grading ----------
@@ -1346,7 +1828,7 @@ async function saveGrade() {
     score = Number(raw);
     const max = currentMaxScore();
     if (!Number.isInteger(score) || score < MIN_SCORE || score > max) {
-      alert(`Score must be a whole number between ${MIN_SCORE} and ${max}.`);
+      alert(`Балл должен быть целым числом от ${MIN_SCORE} до ${max}.`);
       return;
     }
   }
@@ -1362,9 +1844,9 @@ async function saveGrade() {
     await loadPendingReview();
     await loadAssignments();
     await loadStudentManage();
-    alert("Grade saved");
+    alert("Оценка сохранена");
   } catch (err) {
-    alert("Could not save grade: " + err.message);
+    alert("Не удалось сохранить оценку: " + err.message);
   }
 }
 
@@ -1378,7 +1860,7 @@ async function loadDiscussion() {
   if (!list) return;
   list.innerHTML = "";
   if (messages.length === 0) {
-    list.innerHTML = '<p class="muted">No messages yet.</p>';
+    list.innerHTML = '<p class="muted">Сообщений пока нет.</p>';
     return;
   }
   messages.forEach((m) => {
@@ -1390,7 +1872,7 @@ async function loadDiscussion() {
     }
     // A teacher may delete any message in the thread - their own and the student's.
     div.innerHTML = `<div class="meta">${escapeHtml(m.authorName)} · ${new Date(m.created_at).toLocaleString()}
-        <button class="delete-message" data-message="${m.id}" title="Delete message">×</button>
+        <button class="delete-message" data-message="${m.id}" title="Удалить сообщение">×</button>
       </div>
       <div class="body">${escapeHtml(m.body)}</div>${linked}`;
     list.appendChild(div);
@@ -1411,12 +1893,12 @@ async function loadDiscussion() {
 }
 
 async function deleteMessage(messageId) {
-  if (!confirm("Delete this message? This can't be undone.")) return;
+  if (!confirm("Удалить сообщение? Это действие нельзя отменить.")) return;
   try {
     await api(`/api/discussions/messages/${messageId}`, { method: "DELETE" });
     await loadDiscussion();
   } catch (err) {
-    alert("Could not delete message: " + err.message);
+    alert("Не удалось удалить сообщение: " + err.message);
   }
 }
 
@@ -1432,7 +1914,7 @@ async function sendMessage() {
     input.value = "";
     await loadDiscussion();
   } catch (err) {
-    alert("Could not send message: " + err.message);
+    alert("Не удалось отправить сообщение: " + err.message);
   }
 }
 
@@ -1443,7 +1925,7 @@ async function loadStudentManage() {
   const container = document.getElementById("student-manage");
   container.innerHTML = "";
   if (users.length === 0) {
-    container.innerHTML = '<p class="muted">No students yet.</p>';
+    container.innerHTML = '<p class="muted">Учеников пока нет.</p>';
     return;
   }
 
@@ -1458,7 +1940,7 @@ async function loadStudentManage() {
   groups.forEach((members, groupName) => {
     const heading = document.createElement("div");
     heading.className = "group-heading";
-    heading.textContent = groupName || "No group";
+    heading.textContent = groupName || "Без группы";
     container.appendChild(heading);
 
     members.sort(byStudentName);
@@ -1489,16 +1971,16 @@ function deadlineHint(row) {
   if (row.deadlineState === "overdue") {
     const late = Math.abs(hours);
     return late < 48
-      ? `overdue by ${late} h`
-      : `overdue by ${Math.round(late / 24)} d`;
+      ? `просрочено на ${late} ч`
+      : `просрочено на ${Math.round(late / 24)} дн`;
   }
-  return hours < 24 ? `${hours} h left` : `${Math.round(hours / 24)} d left`;
+  return hours < 24 ? `осталось ${hours} ч` : `осталось ${Math.round(hours / 24)} дн`;
 }
 
 function deadlineMark(row) {
   if (!row.deadlineState) return "";
   const cls = row.deadlineState === "overdue" ? "deadline-flag overdue" : "deadline-flag";
-  const label = row.deadlineState === "overdue" ? "overdue" : "due soon";
+  const label = row.deadlineState === "overdue" ? "просрочено" : "скоро срок";
   return ` <span class="${cls}" title="${escapeHtml(deadlineHint(row))}">${label}</span>`;
 }
 
@@ -1514,7 +1996,7 @@ function renderDeadlineWarnings(rows) {
   }
   box.innerHTML = `
     <div class="warning-banner">
-      <strong>Not handed in yet:</strong>
+      <strong>Ещё не сдано:</strong>
       <ul>
         ${flagged
           .map(
@@ -1545,28 +2027,28 @@ async function selectStudentProfile(studentId) {
     <div class="card">
       <h2>${escapeHtml(studentName(student))}</h2>
       <table class="profile-table">
-        <tr><td class="muted">Username</td><td>${escapeHtml(student.username)}</td></tr>
-        <tr><td class="muted">First name</td><td>${escapeHtml(student.firstName || "—")}</td></tr>
-        <tr><td class="muted">Last name</td><td>${escapeHtml(student.lastName || "—")}</td></tr>
-        <tr><td class="muted">Study group</td><td>${escapeHtml(student.groupName || "—")}</td></tr>
-        <tr><td class="muted">Email</td><td>${escapeHtml(student.email || "—")}</td></tr>
+        <tr><td class="muted">Логин</td><td>${escapeHtml(student.username)}</td></tr>
+        <tr><td class="muted">Имя</td><td>${escapeHtml(student.firstName || "—")}</td></tr>
+        <tr><td class="muted">Фамилия</td><td>${escapeHtml(student.lastName || "—")}</td></tr>
+        <tr><td class="muted">Учебная группа</td><td>${escapeHtml(student.groupName || "—")}</td></tr>
+        <tr><td class="muted">Почта</td><td>${escapeHtml(student.email || "—")}</td></tr>
         <tr>
-          <td class="muted">Password</td>
+          <td class="muted">Пароль</td>
           <td>${
             student.initialPassword
               ? `<code>${escapeHtml(student.initialPassword)}</code>
-                 <span class="muted" style="font-size:12px">— the password this account was created with</span>`
-              : '<span class="muted">not recorded</span>'
+                 <span class="muted" style="font-size:12px">— пароль, с которым создана учётная запись</span>`
+              : '<span class="muted">не сохранён</span>'
           }</td>
         </tr>
       </table>
     </div>
     <div class="card">
-      <h3>Assignments</h3>
+      <h3>Задания</h3>
       <div id="deadline-warnings"></div>
       <table>
         <thead>
-          <tr><th>Assignment</th><th>Deadline</th><th>Latest version</th><th>Status</th><th>Last activity</th><th>Grade</th></tr>
+          <tr><th>Задание</th><th>Дедлайн</th><th>Последняя версия</th><th>Статус</th><th>Активность</th><th>Оценка</th></tr>
         </thead>
         <tbody id="profile-rows"></tbody>
       </table>
@@ -1577,17 +2059,21 @@ async function selectStudentProfile(studentId) {
 
   const tbody = document.getElementById("profile-rows");
   if (rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="muted">No assignments yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">Заданий пока нет.</td></tr>';
     return;
   }
   rows.forEach((r) => {
     const tr = document.createElement("tr");
     tr.className = "student-row";
     tr.innerHTML = `
-      <td>${escapeHtml(r.title)}${r.archived ? ' <span class="muted">(archived)</span>' : ""}${deadlineMark(r)}</td>
+      <td>${escapeHtml(r.title)}${r.archived ? ' <span class="muted">(в архиве)</span>' : ""}${deadlineMark(r)}</td>
       <td class="muted">${r.deadline ? formatDeadline(r.deadline) : "—"}</td>
       <td>${r.latestVersion ? "v" + r.latestVersion : "—"}</td>
-      <td>${r.status ? `<span class="badge ${r.status}">${r.status}</span>` : '<span class="badge">not started</span>'}</td>
+      <td>${
+        r.status
+          ? `<span class="badge ${r.status}">${versionStatusLabel(r.status)}</span>`
+          : '<span class="badge">не начато</span>'
+      }</td>
       <td class="muted">${r.lastActivity ? new Date(r.lastActivity).toLocaleString() : "—"}</td>
       <td>${
         r.score !== null && r.score !== undefined
@@ -1682,7 +2168,7 @@ function renderNotificationForm(existing) {
   const main = document.getElementById("main-content");
   main.innerHTML = `
     <div class="card">
-      <h2>${editing ? "Edit notification" : "New notification"}</h2>
+      <h2>${editing ? "Редактирование уведомления" : "Новое уведомление"}</h2>
       <p class="muted">
         Текст увидит каждый ученик — плашкой над рабочей областью, пока
         уведомление активно. Ученик может закрыть плашку; до конца его сессии
@@ -1705,10 +2191,10 @@ function renderNotificationForm(existing) {
       </div>
       <div id="n-message"></div>
       <div class="toolbar">
-        <button id="n-save">${editing ? "Save changes" : "Publish"}</button>
+        <button id="n-save">${editing ? "Сохранить изменения" : "Опубликовать"}</button>
         ${
           editing
-            ? '<button class="secondary danger" id="n-delete">Delete</button>'
+            ? '<button class="secondary danger" id="n-delete">Удалить</button>'
             : ""
         }
       </div>

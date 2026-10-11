@@ -11,6 +11,7 @@ const discussionRoutes = require("./routes/discussions");
 const gradeRoutes = require("./routes/grades");
 const uploadRoutes = require("./routes/uploads");
 const notificationRoutes = require("./routes/notifications");
+const testRoutes = require("./routes/tests");
 
 const app = express();
 
@@ -76,6 +77,7 @@ app.use("/api/discussions", discussionRoutes);
 app.use("/api/grades", gradeRoutes);
 app.use("/api/uploads", uploadRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/tests", testRoutes);
 
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -89,10 +91,10 @@ app.get("*", (req, res) => {
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
   if (err.type === "entity.too.large") {
-    return res.status(413).json({ error: "Upload is too large" });
+    return res.status(413).json({ error: "Слишком большой объём загрузки" });
   }
   console.error(err);
-  res.status(500).json({ error: "Server error" });
+  res.status(500).json({ error: "Ошибка сервера" });
 });
 
 const PORT = process.env.PORT || 3000;

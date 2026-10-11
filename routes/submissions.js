@@ -27,7 +27,7 @@ function readProject(body) {
   if (Array.isArray(body.files) && body.files.length > 0) {
     if (body.files.length > MAX_FILES_PER_PROJECT) {
       throw new SandboxError(
-        `A project can hold at most ${MAX_FILES_PER_PROJECT} files`
+        `В проекте не больше ${MAX_FILES_PER_PROJECT} файлов`
       );
     }
     const files = body.files.map((f) => ({
@@ -50,7 +50,7 @@ function readProject(body) {
     };
   }
 
-  throw new SandboxError("No code to run");
+  throw new SandboxError("Нечего запускать: нет кода");
 }
 
 function filesForSubmission(submissionId) {
@@ -74,7 +74,7 @@ function resolveStudentId(req) {
 // passes ?studentId=)
 router.get("/assignment/:assignmentId", requireLogin, (req, res) => {
   const studentId = resolveStudentId(req);
-  if (!studentId) return res.status(400).json({ error: "studentId required" });
+  if (!studentId) return res.status(400).json({ error: "Не указан ученик" });
 
   const rows = db
     .prepare(
@@ -142,7 +142,7 @@ router.post("/interactive", requireLogin, requireRole("student"), async (req, re
     if (err instanceof SandboxError) return res.status(400).json({ error: err.message });
     if (err instanceof QueueFullError) return res.status(503).json({ error: err.message });
     console.error(err);
-    res.status(502).json({ error: "Failed to start the program" });
+    res.status(502).json({ error: "Не удалось запустить программу" });
   }
 });
 
@@ -150,7 +150,7 @@ router.post("/interactive", requireLogin, requireRole("student"), async (req, re
 // reconnecting doesn't lose output.
 router.get("/interactive/:sessionId/stream", requireLogin, (req, res) => {
   const entry = ownedSession(req);
-  if (!entry) return res.status(404).json({ error: "No such run" });
+  if (!entry) return res.status(404).json({ error: "Запуск не найден" });
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -184,9 +184,9 @@ router.get("/interactive/:sessionId/stream", requireLogin, (req, res) => {
 
 router.post("/interactive/:sessionId/input", requireLogin, (req, res) => {
   const entry = ownedSession(req);
-  if (!entry) return res.status(404).json({ error: "No such run" });
+  if (!entry) return res.status(404).json({ error: "Запуск не найден" });
   if (entry.session.finished) {
-    return res.status(409).json({ error: "The program has already finished" });
+    return res.status(409).json({ error: "Программа уже завершилась" });
   }
   const text = typeof req.body.text === "string" ? req.body.text : "";
   entry.session.write(text);
@@ -195,7 +195,7 @@ router.post("/interactive/:sessionId/input", requireLogin, (req, res) => {
 
 router.post("/interactive/:sessionId/stop", requireLogin, (req, res) => {
   const entry = ownedSession(req);
-  if (!entry) return res.status(404).json({ error: "No such run" });
+  if (!entry) return res.status(404).json({ error: "Запуск не найден" });
   entry.session.stop();
   res.json({ ok: true });
 });
@@ -210,14 +210,14 @@ router.patch(
     const submission = db
       .prepare("SELECT * FROM submissions WHERE id = ?")
       .get(req.params.submissionId);
-    if (!submission) return res.status(404).json({ error: "Submission not found" });
+    if (!submission) return res.status(404).json({ error: "Версия не найдена" });
     if (submission.student_id !== req.session.user.id) {
-      return res.status(403).json({ error: "Not your submission" });
+      return res.status(403).json({ error: "Это не ваша версия" });
     }
     if (submission.status !== "draft") {
       return res
         .status(400)
-        .json({ error: "Only a draft can be renamed" });
+        .json({ error: "Переименовать можно только черновик" });
     }
 
     const title = readVersionTitle(req.body.title);
@@ -234,13 +234,13 @@ router.get("/:submissionId/files", requireLogin, (req, res) => {
   const submission = db
     .prepare("SELECT * FROM submissions WHERE id = ?")
     .get(req.params.submissionId);
-  if (!submission) return res.status(404).json({ error: "Submission not found" });
+  if (!submission) return res.status(404).json({ error: "Версия не найдена" });
 
   if (
     req.session.user.role !== "teacher" &&
     submission.student_id !== req.session.user.id
   ) {
-    return res.status(403).json({ error: "Not your submission" });
+    return res.status(403).json({ error: "Это не ваша версия" });
   }
 
   res.json({ files: filesForSubmission(submission.id) });
@@ -270,7 +270,7 @@ router.post(
       // Every slot is busy and the waiting list is full - ask them to retry.
       if (err instanceof QueueFullError) return res.status(503).json({ error: err.message });
       console.error(err);
-      res.status(502).json({ error: "Failed to run code in sandbox" });
+      res.status(502).json({ error: "Не удалось выполнить код в песочнице" });
     }
   }
 );
@@ -314,7 +314,7 @@ router.post(
     if (base !== latestId) {
       return res.status(409).json({
         error:
-          "You can only edit and submit your latest version. Reload the page to continue from the newest one.",
+          "Редактировать и сдавать можно только последнюю версию. Обновите страницу, чтобы продолжить с неё.",
         latestVersionId: latestId,
       });
     }
@@ -329,7 +329,13 @@ router.post(
 
     if (assignmentType === "freeform") {
       return res.status(400).json({
-        error: "This assignment takes attached files, not saved versions",
+        error: "В этом задании сдаются приложенные файлы, а не версии",
+      });
+    }
+
+    if (assignmentType === "test") {
+      return res.status(400).json({
+        error: "Это задание — тест, ответы сохраняются отдельно",
       });
     }
 

@@ -99,7 +99,7 @@ function storeFile(file, policy = {}) {
   // arbitrary by definition, so they use a blocklist instead.
   if (blocked) {
     if (!ext) {
-      throw new UploadError(`"${originalName}": the file needs an extension`);
+      throw new UploadError(`«${originalName}»: у файла должно быть расширение`);
     }
     if (blocked.includes(ext)) {
       throw new UploadError(
@@ -120,11 +120,11 @@ function storeFile(file, policy = {}) {
   try {
     buffer = Buffer.from(payload, "base64");
   } catch {
-    throw new UploadError(`"${originalName}": could not decode file contents`);
+    throw new UploadError(`«${originalName}»: не удалось прочитать содержимое файла`);
   }
 
   if (buffer.length === 0) {
-    throw new UploadError(`"${originalName}": file is empty`);
+    throw new UploadError(`«${originalName}»: файл пуст`);
   }
   if (buffer.length > maxBytes) {
     throw new UploadError(
@@ -145,7 +145,7 @@ function storeFiles(files, policy = {}) {
   if (!Array.isArray(files) || files.length === 0) return [];
   const maxFiles = policy.maxFiles || MAX_FILES_PER_ASSIGNMENT;
   if (files.length > maxFiles) {
-    throw new UploadError(`Too many files: ${files.length} (limit is ${maxFiles})`);
+    throw new UploadError(`Слишком много файлов: ${files.length} (можно не больше ${maxFiles})`);
   }
 
   const stored = [];

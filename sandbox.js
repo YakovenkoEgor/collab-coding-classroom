@@ -227,7 +227,7 @@ const limiter = new Limiter(SLOTS, MAX_QUEUE);
 // message meant for the student. Shared by batch and interactive runs.
 function validateProject(files, entryFilename) {
   if (!Array.isArray(files) || files.length === 0) {
-    throw new SandboxError("The project has no files");
+    throw new SandboxError("В проекте нет файлов");
   }
 
   // Sources are compiled; data files are only mounted next to the running
@@ -238,14 +238,14 @@ function validateProject(files, entryFilename) {
     if (projectFiles.isJavaFile(file.filename)) {
       if (!isValidJavaFilename(file.filename)) {
         throw new SandboxError(
-          `"${file.filename}" is not a valid Java file name (expected something like Main.java)`
+          `«${file.filename}» — недопустимое имя файла Java (ожидается что-то вроде Main.java)`
         );
       }
       continue;
     }
     if (!projectFiles.isSafeDataFilename(file.filename)) {
       throw new SandboxError(
-        `"${file.filename}" is not a usable file name - use letters, digits, dot, dash and underscore, with no folders`
+        `«${file.filename}» — недопустимое имя файла: буквы, цифры, точка, дефис и подчёркивание, без папок`
       );
     }
     dataCount += 1;
@@ -254,18 +254,18 @@ function validateProject(files, entryFilename) {
 
   if (dataCount > projectFiles.MAX_DATA_FILES) {
     throw new SandboxError(
-      `A project can hold at most ${projectFiles.MAX_DATA_FILES} data files`
+      `В проекте не больше ${projectFiles.MAX_DATA_FILES} файлов данных`
     );
   }
   if (dataBytes > projectFiles.MAX_DATA_TOTAL_BYTES) {
     throw new SandboxError(
-      `The data files add up to more than ${Math.round(
+      `Файлы данных в сумме больше ${Math.round(
         projectFiles.MAX_DATA_TOTAL_BYTES / 1024
-      )} KB`
+      )} КБ`
     );
   }
   if (!files.some((f) => projectFiles.isJavaFile(f.filename))) {
-    throw new SandboxError("The project has no Java file to run");
+    throw new SandboxError("В проекте нет файла .java, который можно запустить");
   }
   // Compared case-insensitively on purpose. Linux would happily keep both
   // Main.java and main.java and then fail deep inside javac, while Windows
@@ -277,8 +277,8 @@ function validateProject(files, entryFilename) {
     if (seen.has(key)) {
       throw new SandboxError(
         seen.get(key) === file.filename
-          ? `Duplicate file name: ${file.filename}`
-          : `"${file.filename}" and "${seen.get(key)}" differ only in capitalisation - pick distinct names`
+          ? `Файл с именем ${file.filename} уже есть в проекте`
+          : `«${file.filename}» и «${seen.get(key)}» различаются только регистром — дайте им разные имена`
       );
     }
     seen.set(key, file.filename);
@@ -286,11 +286,11 @@ function validateProject(files, entryFilename) {
 
   const entry = files.find((f) => f.filename === entryFilename);
   if (!entry) {
-    throw new SandboxError(`Entry file "${entryFilename}" is not part of the project`);
+    throw new SandboxError(`Файл запуска «${entryFilename}» не входит в проект`);
   }
   if (!projectFiles.isJavaFile(entry.filename)) {
     throw new SandboxError(
-      `"${entry.filename}" is a data file - a run has to start from a .java file`
+      `«${entry.filename}» — файл данных, запуск должен начинаться с файла .java`
     );
   }
   return entry;
@@ -305,7 +305,7 @@ function compileFailure(compileResult) {
       stderr:
         compileResult.exitCode === -1
           ? compileResult.stderr
-          : "The code sandbox is unavailable: Docker is not running on the server. Ask your teacher to start it.",
+          : "Песочница недоступна: на сервере не запущен Docker. Сообщите преподавателю.",
       compileOutput: "",
       status: "Sandbox Error",
     };
@@ -314,7 +314,7 @@ function compileFailure(compileResult) {
     return {
       stdout: "",
       stderr: "",
-      compileOutput: "Compilation timed out.",
+      compileOutput: "Компиляция не уложилась в отведённое время.",
       status: "Compilation Time Limit Exceeded",
     };
   }
@@ -322,7 +322,7 @@ function compileFailure(compileResult) {
     return {
       stdout: "",
       stderr: "",
-      compileOutput: compileResult.stderr || "Compilation failed.",
+      compileOutput: compileResult.stderr || "Компиляция не удалась.",
       status: "Compilation Error",
     };
   }
@@ -559,7 +559,7 @@ async function runProjectInSlot(files, entry, stdin) {
         stderr:
           runResult.exitCode === -1
             ? runResult.stderr
-            : "The code sandbox is unavailable: Docker is not running on the server. Ask your teacher to start it.",
+            : "Песочница недоступна: на сервере не запущен Docker. Сообщите преподавателю.",
         compileOutput: "",
         status: "Sandbox Error",
       };
@@ -572,7 +572,7 @@ async function runProjectInSlot(files, entry, stdin) {
     if (runResult.timedOut) {
       return {
         stdout: runResult.stdout,
-        stderr: "Time limit exceeded.",
+        stderr: "Превышено время выполнения.",
         compileOutput: "",
         status: "Time Limit Exceeded",
         ...work,
@@ -582,7 +582,7 @@ async function runProjectInSlot(files, entry, stdin) {
     if (runResult.exitCode !== 0) {
       return {
         stdout: runResult.stdout,
-        stderr: runResult.stderr || `Process exited with code ${runResult.exitCode}`,
+        stderr: runResult.stderr || `Программа завершилась с кодом ${runResult.exitCode}`,
         compileOutput: "",
         status: "Runtime Error",
         ...work,
@@ -647,7 +647,7 @@ class InteractiveSession extends EventEmitter {
   touch() {
     clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(
-      () => this.finish("Stopped: no activity for a while."),
+      () => this.finish("Остановлено: долго не было активности."),
       INTERACTIVE_IDLE_SECONDS * 1000
     );
   }
@@ -664,7 +664,7 @@ class InteractiveSession extends EventEmitter {
   }
 
   stop() {
-    this.finish("Stopped.");
+    this.finish("Остановлено.");
   }
 
   finish(reason) {
@@ -751,7 +751,7 @@ async function startInteractiveRun(files, entryFilename) {
     const text = chunk.toString().replace(/\r\n/g, "\n");
     session.outputLength += text.length;
     if (session.outputLength > INTERACTIVE_OUTPUT_CAP) {
-      session.finish("Stopped: the program produced too much output.");
+      session.finish("Остановлено: программа вывела слишком много текста.");
       return;
     }
     session.touch();
@@ -763,22 +763,22 @@ async function startInteractiveRun(files, entryFilename) {
   child.stderr.on("data", forward);
 
   child.on("error", (err) => {
-    session.emit("output", `Failed to run Docker: ${err.message}\n`);
-    session.finish("Sandbox error.");
+    session.emit("output", `Не удалось запустить Docker: ${err.message}\n`);
+    session.finish("Ошибка песочницы.");
   });
 
   child.on("close", (code) => {
     session.finish(
       code === 124
-        ? "Time limit exceeded."
+        ? "Превышено время выполнения."
         : code === 0
-          ? "Program finished."
-          : `Program exited with code ${code}.`
+          ? "Программа завершена."
+          : `Программа завершилась с кодом ${code}.`
     );
   });
 
   session.hardTimer = setTimeout(
-    () => session.finish("Time limit exceeded."),
+    () => session.finish("Превышено время выполнения."),
     (INTERACTIVE_MAX_SECONDS + 10) * 1000
   );
   session.touch();
