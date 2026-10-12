@@ -34,9 +34,9 @@ function requireFreeform(assignmentId) {
   const assignment = db
     .prepare("SELECT * FROM assignments WHERE id = ?")
     .get(assignmentId);
-  if (!assignment) return { error: "Assignment not found", status: 404 };
+  if (!assignment) return { error: "Задание не найдено", status: 404 };
   if (assignment.type !== "freeform") {
-    return { error: "This assignment does not take attached files", status: 400 };
+    return { error: "В этом задании файлы не принимаются", status: 400 };
   }
   return { assignment };
 }
@@ -52,7 +52,7 @@ router.get("/limits", requireLogin, (req, res) => {
 
 router.get("/assignment/:assignmentId", requireLogin, (req, res) => {
   const studentId = resolveStudentId(req);
-  if (!studentId) return res.status(400).json({ error: "studentId required" });
+  if (!studentId) return res.status(400).json({ error: "Не указан ученик" });
   res.json({ files: uploadsFor(req.params.assignmentId, studentId) });
 });
 
@@ -69,7 +69,7 @@ router.post(
     const studentId = req.session.user.id;
     const incoming = Array.isArray(req.body.files) ? req.body.files : [];
     if (incoming.length === 0) {
-      return res.status(400).json({ error: "No files to attach" });
+      return res.status(400).json({ error: "Нет файлов для загрузки" });
     }
 
     // Same-name uploads replace the old file rather than being refused.
@@ -143,9 +143,9 @@ router.delete("/:id", requireLogin, requireRole("student"), (req, res) => {
   const file = db
     .prepare("SELECT * FROM submission_uploads WHERE id = ?")
     .get(req.params.id);
-  if (!file) return res.status(404).json({ error: "File not found" });
+  if (!file) return res.status(404).json({ error: "Файл не найден" });
   if (file.student_id !== req.session.user.id) {
-    return res.status(403).json({ error: "Not your file" });
+    return res.status(403).json({ error: "Это не ваш файл" });
   }
 
   db.prepare("DELETE FROM submission_uploads WHERE id = ?").run(file.id);
@@ -157,21 +157,21 @@ router.get("/:id/download", requireLogin, (req, res) => {
   const file = db
     .prepare("SELECT * FROM submission_uploads WHERE id = ?")
     .get(req.params.id);
-  if (!file) return res.status(404).json({ error: "File not found" });
+  if (!file) return res.status(404).json({ error: "Файл не найден" });
 
   if (
     req.session.user.role !== "teacher" &&
     file.student_id !== req.session.user.id
   ) {
-    return res.status(403).json({ error: "Not your file" });
+    return res.status(403).json({ error: "Это не ваш файл" });
   }
 
   const fullPath = storage.pathForStoredName(file.stored_name);
-  if (!fullPath) return res.status(404).json({ error: "File not found" });
+  if (!fullPath) return res.status(404).json({ error: "Файл не найден" });
 
   res.download(fullPath, file.original_name, (err) => {
     if (err && !res.headersSent) {
-      res.status(404).json({ error: "File is missing from disk" });
+      res.status(404).json({ error: "Файл отсутствует на диске" });
     }
   });
 });

@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
 <meta charset="UTF-8">
-<title>Java Classroom — New student</title>
+<title>Java Classroom — Новый ученик</title>
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -10,85 +10,85 @@
     <div class="brand"><span class="dot"></span> Java Classroom</div>
     <div class="user-info">
       <span id="whoami"></span>
-      <button class="secondary" id="logout-btn">Log out</button>
+      <button class="secondary" id="logout-btn">Выйти</button>
     </div>
   </div>
 
   <div class="layout single">
     <div class="main">
-      <a class="back-link" href="/teacher.html">← Back to dashboard</a>
+      <a class="back-link" href="/teacher.html">← Назад к заданиям</a>
 
       <div class="card">
-        <h2>New student</h2>
+        <h2>Новый ученик</h2>
         <p class="muted">
-          Creates a student account. The student signs in with the username and
-          password you set here — pass them on and have the student change the
-          password later.
+          Создаёт учётную запись ученика. Войти он сможет с логином и паролем,
+          которые вы здесь зададите — передайте их ученику и попросите потом
+          сменить пароль.
         </p>
 
         <div class="form-row">
-          <label for="s-first">First name *</label>
-          <input id="s-first" autocomplete="off" placeholder="Alex">
+          <label for="s-first">Имя *</label>
+          <input id="s-first" autocomplete="off" placeholder="Иван">
         </div>
 
         <div class="form-row">
-          <label for="s-last">Last name *</label>
-          <input id="s-last" autocomplete="off" placeholder="Chen">
+          <label for="s-last">Фамилия *</label>
+          <input id="s-last" autocomplete="off" placeholder="Петров">
         </div>
 
         <div class="form-row">
-          <label for="s-group">Study group</label>
+          <label for="s-group">Учебная группа</label>
           <input id="s-group" autocomplete="off" placeholder="CS-101">
         </div>
 
         <div class="form-row">
-          <label for="s-username">Username (login) *</label>
-          <input id="s-username" autocomplete="off" placeholder="alexc">
+          <label for="s-username">Логин *</label>
+          <input id="s-username" autocomplete="off" placeholder="ipetrov">
         </div>
 
         <div class="form-row">
-          <label for="s-email">Email</label>
-          <input id="s-email" type="email" autocomplete="off" placeholder="optional">
+          <label for="s-email">Электронная почта</label>
+          <input id="s-email" type="email" autocomplete="off" placeholder="необязательно">
         </div>
 
         <div class="form-row">
-          <label for="s-password">Temporary password *</label>
-          <input id="s-password" type="text" autocomplete="off" placeholder="at least 6 characters">
+          <label for="s-password">Временный пароль *</label>
+          <input id="s-password" type="text" autocomplete="off" placeholder="не меньше 6 символов">
           <span class="muted" style="font-size:12px">
-            Shown as plain text on purpose — you need to read it out to the student.
+            Показан открыто намеренно — его нужно продиктовать ученику.
           </span>
         </div>
 
         <div class="toolbar">
-          <button id="create-btn">Create student</button>
-          <button class="secondary" id="create-another-btn">Create and add another</button>
+          <button id="create-btn">Создать ученика</button>
+          <button class="secondary" id="create-another-btn">Создать и добавить ещё</button>
         </div>
 
         <div id="form-message"></div>
       </div>
 
       <div class="card">
-        <h2>Import a class from CSV</h2>
+        <h2>Импорт группы из CSV</h2>
         <p class="muted">
-          One student per line: <code>last name, first name, login, email</code>.
-          Email is optional; a header row is recognised and skipped. Each student
-          gets an 8-character password, shown below after the import and later in
-          their profile.
+          По одному ученику в строке: <code>фамилия, имя, логин, почта</code>.
+          Почта необязательна; строка заголовка распознаётся и пропускается.
+          Каждому ученику выдаётся пароль из 8 символов — он появится ниже
+          после импорта, а потом будет виден в профиле ученика.
         </p>
 
         <div class="form-row">
-          <label for="i-group">Study group for everyone in this file</label>
+          <label for="i-group">Учебная группа для всех из этого файла</label>
           <input id="i-group" autocomplete="off" placeholder="CS-101">
         </div>
 
         <div class="form-row">
-          <label for="i-file">CSV file</label>
+          <label for="i-file">CSV-файл</label>
           <input type="file" id="i-file" accept=".csv,text/csv">
         </div>
 
         <div class="toolbar">
-          <button id="import-btn" disabled>Import students</button>
-          <a class="back-link" id="sample-link" href="#" style="margin:0">Download a sample file</a>
+          <button id="import-btn" disabled>Импортировать</button>
+          <a class="back-link" id="sample-link" href="#" style="margin:0">Скачать пример файла</a>
         </div>
 
         <div id="import-message"></div>

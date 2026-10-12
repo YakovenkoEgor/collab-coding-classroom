@@ -770,3 +770,124 @@ button.secondary.danger:hover { border-color: var(--error); color: var(--error);
 
 .console-output { color: var(--text); }
 .console-status { color: var(--text-dim); }
+
+/* --- Test assignments: the teacher's question builder --- */
+.test-settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 6px 0 8px;
+}
+.inline-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.test-question {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  background: var(--bg-panel-raised);
+}
+.test-question textarea,
+.test-question .tq-expected { width: 100%; }
+.tq-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.tq-head select { flex: 1 1 auto; min-width: 0; }
+.tq-number {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tq-options { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.tq-option { display: flex; align-items: center; gap: 8px; }
+.tq-option-body { flex: 1 1 auto; min-width: 0; }
+.tq-add-option { align-self: flex-start; }
+
+/* --- Test assignments: the student's view --- */
+.test-timer {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 20px;
+  padding: 4px 12px;
+  border: 1px solid var(--accent-dim);
+  border-radius: 8px;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+.test-timer.urgent { color: var(--error); border-color: var(--error); }
+
+.test-questions { display: flex; flex-direction: column; gap: 10px; }
+.test-question-view {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+.test-question-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.test-question-body { font-size: 14px; white-space: pre-wrap; margin-bottom: 8px; }
+.test-options { display: flex; flex-direction: column; gap: 6px; }
+.test-option { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; cursor: pointer; }
+.test-option input { margin-top: 3px; }
+.test-open { width: 100%; font-family: var(--font-ui); }
+
+/* --- Test assignments: the result the teacher reads --- */
+.test-stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 14px; }
+.test-stat {
+  flex: 1 1 180px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.test-stat.correct { border-left-color: var(--accent); }
+.test-stat.incorrect { border-left-color: var(--error); }
+.test-stat.manual { border-left-color: var(--warn); }
+.test-stat-value { display: block; font-size: 18px; font-weight: 600; }
+.test-stat-percent { display: block; font-size: 13px; color: var(--text-dim); }
+.test-stat-label { display: block; font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+.test-review-list { display: flex; flex-direction: column; gap: 10px; }
+.test-review-question {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.test-review-question.verdict-correct { border-left-color: var(--accent); }
+.test-review-question.verdict-incorrect { border-left-color: var(--error); }
+.test-review-question.verdict-manual { border-left-color: var(--warn); }
+.test-review-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.test-review-body { font-size: 14px; white-space: pre-wrap; margin-bottom: 6px; }
+.test-verdict { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.test-verdict.correct { color: var(--accent); }
+.test-verdict.incorrect { color: var(--error); }
+.test-verdict.manual { color: var(--warn); }
+.test-verdict.none { color: var(--text-dim); }
+.test-answer-text {
+  font-size: 14px;
+  white-space: pre-wrap;
+  background: var(--bg-panel-raised);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.test-answer-options { margin: 0; padding-left: 18px; font-size: 14px; }
+.test-answer-options li { color: var(--text-dim); }
+.test-answer-options li.chosen { color: var(--text); font-weight: 600; }
+.test-answer-options li.is-correct { color: var(--accent); }
+.test-answer-options li.chosen.is-correct { color: var(--accent); font-weight: 600; }

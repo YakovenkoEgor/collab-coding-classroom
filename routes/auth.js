@@ -57,14 +57,14 @@ router.post("/bootstrap-teacher", (req, res) => {
 
   if (!first || !last || !login || !mail || !password) {
     return res.status(400).json({
-      error: "First name, last name, login, email and password are all required",
+      error: "Имя, фамилия, логин, почта и пароль обязательны",
     });
   }
   if (/\s/.test(login)) {
-    return res.status(400).json({ error: "Login must not contain spaces" });
+    return res.status(400).json({ error: "Логин не должен содержать пробелов" });
   }
   if (String(password).length < 6) {
-    return res.status(400).json({ error: "Password must be at least 6 characters" });
+    return res.status(400).json({ error: "Пароль должен быть не короче 6 символов" });
   }
 
   const displayName = `${first} ${last}`;
@@ -86,13 +86,13 @@ router.post("/bootstrap-teacher", (req, res) => {
     if (id === null) {
       return res
         .status(409)
-        .json({ error: "A teacher account already exists - please sign in instead" });
+        .json({ error: "Учётная запись преподавателя уже существует — войдите в неё" });
     }
 
     res.json({ user: { id, username: login, displayName, role: "teacher" } });
   } catch (err) {
     if (err.message.includes("UNIQUE")) {
-      return res.status(409).json({ error: "Username already exists" });
+      return res.status(409).json({ error: "Такой логин уже занят" });
     }
     throw err;
   }
@@ -101,7 +101,7 @@ router.post("/bootstrap-teacher", (req, res) => {
 router.post("/login", (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
-    return res.status(400).json({ error: "Username and password required" });
+    return res.status(400).json({ error: "Укажите логин и пароль" });
   }
 
   const user = db
@@ -109,7 +109,7 @@ router.post("/login", (req, res) => {
     .get(username);
 
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-    return res.status(401).json({ error: "Invalid username or password" });
+    return res.status(401).json({ error: "Неверный логин или пароль" });
   }
 
   req.session.user = {
@@ -143,7 +143,7 @@ router.post("/users", requireLogin, requireRole("teacher"), (req, res) => {
 
   if (!login || !password || !first || !last) {
     return res.status(400).json({
-      error: "Username, password, first name and last name are required",
+      error: "Логин, пароль, имя и фамилия обязательны",
     });
   }
 
@@ -186,7 +186,7 @@ router.post("/users", requireLogin, requireRole("teacher"), (req, res) => {
     });
   } catch (err) {
     if (err.message.includes("UNIQUE")) {
-      return res.status(409).json({ error: "Username already exists" });
+      return res.status(409).json({ error: "Такой логин уже занят" });
     }
     throw err;
   }
@@ -199,19 +199,19 @@ router.post("/users", requireLogin, requireRole("teacher"), (req, res) => {
 router.post("/users/import", requireLogin, requireRole("teacher"), (req, res) => {
   const { csv, groupName } = req.body;
   if (typeof csv !== "string" || csv.trim() === "") {
-    return res.status(400).json({ error: "CSV content required" });
+    return res.status(400).json({ error: "Нужно содержимое CSV-файла" });
   }
 
   let rows;
   try {
     rows = parseCsv(csv);
   } catch {
-    return res.status(400).json({ error: "Could not read that file as CSV" });
+    return res.status(400).json({ error: "Не удалось прочитать файл как CSV" });
   }
-  if (rows.length === 0) return res.status(400).json({ error: "The file is empty" });
+  if (rows.length === 0) return res.status(400).json({ error: "Файл пуст" });
   if (looksLikeHeader(rows[0])) rows = rows.slice(1);
   if (rows.length === 0) {
-    return res.status(400).json({ error: "The file has a header but no students" });
+    return res.status(400).json({ error: "В файле есть заголовок, но нет учеников" });
   }
 
   const group = (groupName || "").trim();
@@ -236,12 +236,12 @@ router.post("/users/import", requireLogin, requireRole("teacher"), (req, res) =>
       errors.push({
         line,
         value: row.join(", ").slice(0, 60),
-        error: "Last name, first name and login are all required",
+        error: "Фамилия, имя и логин обязательны",
       });
       return;
     }
     if (/\s/.test(username)) {
-      errors.push({ line, value: username, error: "Login must not contain spaces" });
+      errors.push({ line, value: username, error: "Логин не должен содержать пробелов" });
       return;
     }
 
@@ -272,8 +272,8 @@ router.post("/users/import", requireLogin, requireRole("teacher"), (req, res) =>
         line,
         value: username,
         error: err.message.includes("UNIQUE")
-          ? "A user with this login already exists"
-          : "Could not create this student",
+          ? "Пользователь с таким логином уже существует"
+          : "Не удалось создать этого ученика",
       });
     }
   });
@@ -343,7 +343,7 @@ router.get("/users/:id", requireLogin, requireRole("teacher"), (req, res) => {
        FROM users WHERE id = ? AND role = 'student'`
     )
     .get(req.params.id);
-  if (!student) return res.status(404).json({ error: "Student not found" });
+  if (!student) return res.status(404).json({ error: "Ученик не найден" });
 
   const assignments = db
     .prepare(
@@ -355,12 +355,20 @@ router.get("/users/:id", requireLogin, requireRole("teacher"), (req, res) => {
               s.version_number AS latestVersion, s.status,
               s.created_at AS lastActivity,
               g.score, g.feedback,
+              a.type,
               -- Has the student actually handed anything in for this one?
-              EXISTS (
-                SELECT 1 FROM submissions sub
-                WHERE sub.assignment_id = a.id AND sub.student_id = ?
-                  AND sub.status = 'submitted'
-              ) AS hasSubmitted
+              CASE WHEN a.type = 'test'
+                THEN EXISTS (
+                  SELECT 1 FROM test_attempts t
+                  WHERE t.assignment_id = a.id AND t.student_id = ?
+                    AND t.submitted_at IS NOT NULL
+                )
+                ELSE EXISTS (
+                  SELECT 1 FROM submissions sub
+                  WHERE sub.assignment_id = a.id AND sub.student_id = ?
+                    AND sub.status = 'submitted'
+                )
+              END AS hasSubmitted
        FROM assignments a
        ${rules.RULE_JOIN_FOR_STUDENT}
        LEFT JOIN submissions s
@@ -372,7 +380,15 @@ router.get("/users/:id", requireLogin, requireRole("teacher"), (req, res) => {
        LEFT JOIN grades g ON g.assignment_id = a.id AND g.student_id = ?
        ORDER BY a.created_at DESC`
     )
-    .all(req.params.id, req.params.id, req.params.id, req.params.id);
+    // hasSubmitted (two branches), the group-rule join, the latest-submission
+    // sub-query and the grade join - all the same student.
+    .all(
+      req.params.id,
+      req.params.id,
+      req.params.id,
+      req.params.id,
+      req.params.id
+    );
 
   res.json({ student, assignments: assignments.map(withDeadlineState) });
 });

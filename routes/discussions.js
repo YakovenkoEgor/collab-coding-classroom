@@ -34,7 +34,7 @@ function getOrCreateDiscussion(assignmentId, studentId) {
 // assignment/student pair.
 router.get("/assignment/:assignmentId", requireLogin, (req, res) => {
   const studentId = resolveStudentId(req);
-  if (!studentId) return res.status(400).json({ error: "studentId required" });
+  if (!studentId) return res.status(400).json({ error: "Не указан ученик" });
 
   const discussion = getOrCreateDiscussion(req.params.assignmentId, studentId);
 
@@ -56,11 +56,11 @@ router.get("/assignment/:assignmentId", requireLogin, (req, res) => {
 // Post a message. Optionally include submissionId to link a code version.
 router.post("/assignment/:assignmentId/messages", requireLogin, (req, res) => {
   const studentId = resolveStudentId(req);
-  if (!studentId) return res.status(400).json({ error: "studentId required" });
+  if (!studentId) return res.status(400).json({ error: "Не указан ученик" });
 
   const { body, submissionId } = req.body;
   if (!body || !body.trim()) {
-    return res.status(400).json({ error: "Message body required" });
+    return res.status(400).json({ error: "Напишите текст сообщения" });
   }
 
   const discussion = getOrCreateDiscussion(req.params.assignmentId, studentId);
@@ -92,19 +92,19 @@ router.delete("/messages/:id", requireLogin, (req, res) => {
   const message = db
     .prepare("SELECT * FROM messages WHERE id = ?")
     .get(req.params.id);
-  if (!message) return res.status(404).json({ error: "Message not found" });
+  if (!message) return res.status(404).json({ error: "Сообщение не найдено" });
 
   const user = req.session.user;
   if (user.role !== "teacher") {
     if (message.author_id !== user.id) {
-      return res.status(403).json({ error: "You can only delete your own messages" });
+      return res.status(403).json({ error: "Удалять можно только свои сообщения" });
     }
     // Students may only touch their own thread.
     const discussion = db
       .prepare("SELECT * FROM discussions WHERE id = ?")
       .get(message.discussion_id);
     if (!discussion || discussion.student_id !== user.id) {
-      return res.status(403).json({ error: "Not your discussion" });
+      return res.status(403).json({ error: "Это не ваше обсуждение" });
     }
   }
 

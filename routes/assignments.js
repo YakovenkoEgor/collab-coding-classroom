@@ -10,17 +10,18 @@ const {
 } = require("../deadlines");
 const rules = require("../assignmentRules");
 const projectFiles = require("../projectFiles");
+const testing = require("../testing");
 
 const router = express.Router();
 
-const ASSIGNMENT_TYPES = ["code", "text", "freeform"];
+const ASSIGNMENT_TYPES = ["code", "text", "freeform", "test"];
 const MAX_STARTER_FILES = 20;
 
 function normalizeType(type) {
   const value = (type || "code").trim();
   if (!ASSIGNMENT_TYPES.includes(value)) {
     throw new SandboxError(
-      `Unknown assignment type "${value}" (expected one of: ${ASSIGNMENT_TYPES.join(", ")})`
+      `Неизвестный тип задания «${value}» (ожидается один из: ${ASSIGNMENT_TYPES.join(", ")})`
     );
   }
   return value;
@@ -30,9 +31,14 @@ function normalizeType(type) {
 // Free-form assignments have no versions, so an attached file counts instead.
 // Both placeholders take the student id.
 const HAS_SUBMITTED_SQL = `
-  CASE WHEN a.type = 'freeform'
-    THEN EXISTS (SELECT 1 FROM submission_uploads u
-                 WHERE u.assignment_id = a.id AND u.student_id = ?)
+  CASE
+    WHEN a.type = 'freeform'
+      THEN EXISTS (SELECT 1 FROM submission_uploads u
+                   WHERE u.assignment_id = a.id AND u.student_id = ?)
+    WHEN a.type = 'test'
+      THEN EXISTS (SELECT 1 FROM test_attempts t
+                   WHERE t.assignment_id = a.id AND t.student_id = ?
+                     AND t.submitted_at IS NOT NULL)
     ELSE EXISTS (SELECT 1 FROM submissions sub
                  WHERE sub.assignment_id = a.id AND sub.student_id = ?
                    AND sub.status = 'submitted')
@@ -56,7 +62,7 @@ function readStarterProject(body) {
   if (Array.isArray(body.starterFiles) && body.starterFiles.length > 0) {
     if (body.starterFiles.length > MAX_STARTER_FILES) {
       throw new SandboxError(
-        `A starter project can hold at most ${MAX_STARTER_FILES} files`
+        `В стартовом проекте не больше ${MAX_STARTER_FILES} файлов`
       );
     }
     const files = body.starterFiles.map((f) => ({
@@ -72,23 +78,23 @@ function readStarterProject(body) {
       if (projectFiles.isJavaFile(file.filename)) {
         if (!isValidJavaFilename(file.filename)) {
           throw new SandboxError(
-            `"${file.filename}" is not a valid Java file name (expected something like Main.java)`
+            `«${file.filename}» — недопустимое имя файла Java (ожидается что-то вроде Main.java)`
           );
         }
       } else if (!projectFiles.isSafeDataFilename(file.filename)) {
         throw new SandboxError(
-          `"${file.filename}" is not a usable file name - use letters, digits, dot, dash and underscore, with no folders`
+          `«${file.filename}» — недопустимое имя файла: буквы, цифры, точка, дефис и подчёркивание, без папок`
         );
       }
       if (seen.has(file.filename)) {
-        throw new SandboxError(`Duplicate file name: ${file.filename}`);
+        throw new SandboxError(`Файл с именем ${file.filename} уже есть в проекте`);
       }
       seen.add(file.filename);
     }
 
     const javaFiles = files.filter((f) => projectFiles.isJavaFile(f.filename));
     if (javaFiles.length === 0) {
-      throw new SandboxError("A starter project needs at least one .java file");
+      throw new SandboxError("В стартовом проекте нужен хотя бы один файл .java");
     }
 
     // The entry is what the student's Run starts from, so it has to be a
@@ -143,16 +149,34 @@ router.get("/", requireLogin, (req, res) => {
        FROM assignments a ${rules.RULE_JOIN_FOR_STUDENT}
        ${where} ORDER BY a.created_at DESC`
     )
-    .all(req.session.user.id, req.session.user.id, req.session.user.id);
+    // Three placeholders in HAS_SUBMITTED_SQL plus the one in the rule join,
+    // all of them this student's id.
+    .all(
+      req.session.user.id,
+      req.session.user.id,
+      req.session.user.id,
+      req.session.user.id
+    );
 
   res.json({
-    assignments: rows.map((row) =>
-      withDeadlineState({
+    assignments: rows.map((row) => {
+      const assignment = {
         ...row,
         deadline: row.groupDeadline,
         max_score: row.groupMaxScore,
-      })
-    ),
+      };
+      if (row.type !== "test") return withDeadlineState(assignment);
+      // A test also carries the window it can be solved in, so the student's
+      // list can say "not open yet" / "closed" without a second request.
+      return {
+        ...withDeadlineState(assignment),
+        availability: testing.availabilityOf({
+          availableFrom: row.available_from,
+          deadline: assignment.deadline,
+        }),
+        questionCount: testing.questionCount(row.id),
+      };
+    }),
   });
 });
 
@@ -178,6 +202,14 @@ router.get("/review/pending", requireLogin, requireRole("teacher"), (req, res) =
          JOIN assignments a ON a.id = u.assignment_id
          WHERE a.type = 'freeform'
          GROUP BY u.assignment_id, u.student_id
+         UNION ALL
+         -- a handed-in test. Surveys are never marked, so they never wait
+         -- for review.
+         SELECT t.assignment_id, t.student_id, t.submitted_at
+         FROM test_attempts t
+         JOIN assignments a ON a.id = t.assignment_id
+         WHERE a.type = 'test' AND a.test_kind = 'graded'
+           AND t.submitted_at IS NOT NULL
        )
        SELECT l.assignment_id AS assignmentId, l.student_id AS studentId
        FROM latest_submitted l
@@ -206,7 +238,8 @@ router.get("/:id", requireLogin, (req, res) => {
   const assignment = db
     .prepare("SELECT * FROM assignments WHERE id = ?")
     .get(req.params.id);
-  if (!assignment) return res.status(404).json({ error: "Not found" });
+  if (!assignment) return res.status(404).json({ error: "Задание не найдено" });
+  const isTeacher = req.session.user.role === "teacher";
   res.json({
     assignment,
     files: filesForAssignment(assignment.id),
@@ -214,6 +247,20 @@ router.get("/:id", requireLogin, (req, res) => {
     groupRules: rules.rulesForAssignment(assignment.id),
     // The groups the edit form offers rows for.
     groups: rules.knownGroups(assignment.id),
+    // A test's questions; only the teacher sees which answers are correct,
+    // and students get the questions through /api/tests anyway.
+    questions:
+      assignment.type === "test" && isTeacher
+        ? testing.questionsFor(assignment.id, { withAnswers: true })
+        : undefined,
+    // Once anyone has started, the questions are frozen: the form shows them
+    // read-only and sends only the settings.
+    testAttempts:
+      assignment.type === "test" && isTeacher
+        ? db
+            .prepare("SELECT COUNT(*) c FROM test_attempts WHERE assignment_id = ?")
+            .get(assignment.id).c
+        : undefined,
   });
 });
 
@@ -237,14 +284,14 @@ router.get("/:id/files/:fileId/download", requireLogin, (req, res) => {
       "SELECT * FROM assignment_files WHERE id = ? AND assignment_id = ?"
     )
     .get(req.params.fileId, req.params.id);
-  if (!file) return res.status(404).json({ error: "File not found" });
+  if (!file) return res.status(404).json({ error: "Файл не найден" });
 
   const fullPath = storage.pathForStoredName(file.stored_name);
-  if (!fullPath) return res.status(404).json({ error: "File not found" });
+  if (!fullPath) return res.status(404).json({ error: "Файл не найден" });
 
   res.download(fullPath, file.original_name, (err) => {
     if (err && !res.headersSent) {
-      res.status(404).json({ error: "File is missing from disk" });
+      res.status(404).json({ error: "Файл отсутствует на диске" });
     }
   });
 });
@@ -274,7 +321,7 @@ function readGroupRules(body) {
   const raw = Array.isArray(body.groupRules) ? body.groupRules : [];
   if (raw.length > rules.MAX_GROUP_RULES) {
     throw new SandboxError(
-      `At most ${rules.MAX_GROUP_RULES} study groups can have their own rules`
+      `Свои правила можно задать не более чем ${rules.MAX_GROUP_RULES} учебным группам`
     );
   }
 
@@ -284,7 +331,7 @@ function readGroupRules(body) {
     const groupName = String((item && item.groupName) || "").trim();
     if (!groupName) continue;
     if (groupName.length > rules.MAX_GROUP_NAME) {
-      throw new SandboxError(`Study group name is too long: "${groupName}"`);
+      throw new SandboxError(`Слишком длинное название учебной группы: «${groupName}»`);
     }
 
     const deadline = normalizeDeadline(item.deadline);
@@ -294,7 +341,7 @@ function readGroupRules(body) {
     if (deadline === null && maxScore === null) continue;
 
     if (seen.has(groupName)) {
-      throw new SandboxError(`Study group "${groupName}" is listed twice`);
+      throw new SandboxError(`Учебная группа «${groupName}» указана дважды`);
     }
     seen.add(groupName);
     parsed.push({ groupName, deadline, maxScore });
@@ -328,11 +375,29 @@ function gradesAboveNewMax(assignmentId, defaultMax, groupRules) {
     }));
 }
 
+// The test part of the payload, for an assignment of type "test": its kind
+// (graded or survey), how long one attempt may last, when solving opens, and
+// the questions themselves.
+function readTestSpec(body) {
+  const testKind = testing.normalizeKind(body.testKind);
+  return {
+    testKind,
+    timeLimitMinutes: testing.normalizeTimeLimit(body.timeLimitMinutes),
+    // Empty means "as soon as it exists", which is the usual case.
+    availableFrom: normalizeDeadline(body.availableFrom),
+    // Leaving questions out of an edit keeps the ones already stored, so the
+    // dates and the time limit can be changed on their own - which is the
+    // whole point once students have started answering.
+    questions:
+      body.questions === undefined ? null : testing.readQuestions(body.questions, testKind),
+  };
+}
+
 // Teacher-only: create an assignment, optionally with handout files.
 // files: [{ name, data }] where data is base64 (a data: URL is also accepted).
 router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
   const { title, description, files, deadline } = req.body;
-  if (!title) return res.status(400).json({ error: "Title required" });
+  if (!title) return res.status(400).json({ error: "Укажите название задания" });
 
   let dueAt;
   try {
@@ -346,6 +411,7 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
   let maxScore;
   let groupRules;
   let starter = null;
+  let test = null;
   try {
     assignmentType = normalizeType(req.body.type);
     maxScore = normalizeMaxScore(req.body.maxScore);
@@ -353,8 +419,17 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
     // Only code assignments carry a Java starter project. A text assignment's
     // starter is the text the student begins from; free-form has none.
     if (assignmentType === "code") starter = readStarterProject(req.body);
+    if (assignmentType === "test") {
+      test = readTestSpec(req.body);
+      // A brand new test has to come with its questions.
+      if (!test.questions) throw new testing.TestError("В тесте должен быть хотя бы один вопрос");
+    }
   } catch (err) {
-    if (err instanceof SandboxError || err instanceof DeadlineError) {
+    if (
+      err instanceof SandboxError ||
+      err instanceof DeadlineError ||
+      err instanceof testing.TestError
+    ) {
       return res.status(400).json({ error: err.message });
     }
     throw err;
@@ -381,8 +456,9 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
       const info = db
         .prepare(
           `INSERT INTO assignments
-             (title, description, starter_code, created_by, deadline, type, max_score)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
+             (title, description, starter_code, created_by, deadline, type, max_score,
+              test_kind, available_from, time_limit_minutes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         // starter_code mirrors the entry file for the older single-file paths.
         .run(
@@ -392,10 +468,14 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
           req.session.user.id,
           dueAt,
           assignmentType,
-          maxScore
+          maxScore,
+          test ? test.testKind : null,
+          test ? test.availableFrom : null,
+          test ? test.timeLimitMinutes : null
         );
 
       rules.replaceRules(info.lastInsertRowid, groupRules);
+      if (test && test.questions) testing.replaceQuestions(info.lastInsertRowid, test.questions);
 
       const insertStarter = db.prepare(
         `INSERT INTO assignment_starter_files
@@ -453,17 +533,18 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
   const assignment = db
     .prepare("SELECT * FROM assignments WHERE id = ?")
     .get(req.params.id);
-  if (!assignment) return res.status(404).json({ error: "Not found" });
+  if (!assignment) return res.status(404).json({ error: "Задание не найдено" });
 
   const { title, description, files, removeFileIds, deadline } = req.body;
   const newTitle = (title || "").trim();
-  if (!newTitle) return res.status(400).json({ error: "Title required" });
+  if (!newTitle) return res.status(400).json({ error: "Укажите название задания" });
 
   let dueAt;
   let starter = null;
   let assignmentType;
   let maxScore;
   let groupRules;
+  let test = null;
   try {
     dueAt = normalizeDeadline(deadline);
     assignmentType = req.body.type === undefined ? assignment.type : normalizeType(req.body.type);
@@ -478,11 +559,29 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
         ? rules.rulesForAssignment(assignment.id)
         : readGroupRules(req.body);
     if (assignmentType === "code") starter = readStarterProject(req.body);
+    if (assignmentType === "test") test = readTestSpec(req.body);
   } catch (err) {
-    if (err instanceof DeadlineError || err instanceof SandboxError) {
+    if (
+      err instanceof DeadlineError ||
+      err instanceof SandboxError ||
+      err instanceof testing.TestError
+    ) {
       return res.status(400).json({ error: err.message });
     }
     throw err;
+  }
+
+  // Editing the questions of a test people have already sat would change what
+  // their answers were answers to, so the attempts have to go first.
+  if (assignmentType === "test") {
+    const attempts = db
+      .prepare("SELECT COUNT(*) c FROM test_attempts WHERE assignment_id = ?")
+      .get(assignment.id).c;
+    if (attempts > 0 && req.body.questions !== undefined) {
+      return res.status(409).json({
+        error: `Этот тест уже начали проходить: ${attempts} чел. Их ответы перестанут соответствовать вопросам. Удалите тест или оставьте вопросы без изменений.`,
+      });
+    }
   }
 
   // Lowering a top mark below marks already given would leave grades that the
@@ -514,7 +613,7 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
     if (existingWork > 0) {
       return res.status(409).json({
         error:
-          "The type can't be changed once students have started working on this assignment",
+          "Тип нельзя изменить после того, как ученики начали работать над заданием",
       });
     }
   }
@@ -554,7 +653,7 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
       db.prepare(
         `UPDATE assignments
          SET title = ?, description = ?, starter_code = ?, deadline = ?, type = ?,
-             max_score = ?
+             max_score = ?, test_kind = ?, available_from = ?, time_limit_minutes = ?
          WHERE id = ?`
       ).run(
         newTitle,
@@ -563,10 +662,14 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
         dueAt,
         assignmentType,
         maxScore,
+        test ? test.testKind : null,
+        test ? test.availableFrom : null,
+        test ? test.timeLimitMinutes : null,
         assignment.id
       );
 
       rules.replaceRules(assignment.id, groupRules);
+      if (test && test.questions) testing.replaceQuestions(assignment.id, test.questions);
 
       db.prepare("DELETE FROM assignment_starter_files WHERE assignment_id = ?").run(
         assignment.id
@@ -630,7 +733,7 @@ router.delete("/:id", requireLogin, requireRole("teacher"), (req, res) => {
   const assignment = db
     .prepare("SELECT * FROM assignments WHERE id = ?")
     .get(req.params.id);
-  if (!assignment) return res.status(404).json({ error: "Not found" });
+  if (!assignment) return res.status(404).json({ error: "Задание не найдено" });
 
   const handouts = db
     .prepare("SELECT stored_name FROM assignment_files WHERE assignment_id = ?")
@@ -659,6 +762,7 @@ router.delete("/:id", requireLogin, requireRole("teacher"), (req, res) => {
     db.prepare("DELETE FROM assignment_group_rules WHERE assignment_id = ?").run(
       assignment.id
     );
+    testing.deleteTestData(assignment.id);
     db.prepare("DELETE FROM submission_uploads WHERE assignment_id = ?").run(assignment.id);
     db.prepare("DELETE FROM assignments WHERE id = ?").run(assignment.id);
   });
@@ -686,6 +790,9 @@ router.get("/:id/impact", requireLogin, requireRole("teacher"), (req, res) => {
       .prepare("SELECT COUNT(*) c FROM submission_uploads WHERE assignment_id = ?")
       .get(id).c,
     grades: db.prepare("SELECT COUNT(*) c FROM grades WHERE assignment_id = ?").get(id).c,
+    testAttempts: db
+      .prepare("SELECT COUNT(*) c FROM test_attempts WHERE assignment_id = ?")
+      .get(id).c,
     messages: db
       .prepare(
         `SELECT COUNT(*) c FROM messages WHERE discussion_id IN
@@ -712,9 +819,13 @@ router.get(
   requireRole("teacher"),
   (req, res) => {
     const assignment = db
-      .prepare("SELECT type FROM assignments WHERE id = ?")
+      .prepare(
+        `SELECT type, test_kind AS testKind, time_limit_minutes AS timeLimitMinutes
+         FROM assignments WHERE id = ?`
+      )
       .get(req.params.id);
     const isFreeform = assignment && assignment.type === "freeform";
+    const isTest = assignment && assignment.type === "test";
 
     const rows = db
       .prepare(
@@ -730,7 +841,9 @@ router.get(
              (SELECT COUNT(*) FROM submission_uploads up
               WHERE up.assignment_id = ? AND up.student_id = u.id) AS fileCount,
              (SELECT MAX(created_at) FROM submission_uploads up
-              WHERE up.assignment_id = ? AND up.student_id = u.id) AS lastUpload
+              WHERE up.assignment_id = ? AND up.student_id = u.id) AS lastUpload,
+             t.id AS attemptId, t.started_at AS attemptStarted,
+             t.submitted_at AS attemptSubmitted
       FROM users u
       JOIN assignments a ON a.id = ?
       ${rules.RULE_JOIN_FOR_USERS}
@@ -742,6 +855,7 @@ router.get(
         )
       ) s ON s.student_id = u.id
       LEFT JOIN grades g ON g.assignment_id = ? AND g.student_id = u.id
+      LEFT JOIN test_attempts t ON t.assignment_id = ? AND t.student_id = u.id
       WHERE u.role = 'student'
       -- A base order by surname; the client re-sorts it to put students who
       -- have handed the work in at the top (what counts as "handed in" depends
@@ -757,18 +871,63 @@ router.get(
         req.params.id,
         req.params.id,
         req.params.id,
+        req.params.id,
         req.params.id
       );
     // Students who haven't handed the work in get the same due-soon/overdue
     // flag the teacher sees in a profile, now against their group's date.
+    // A test's rows carry the state of the attempt and, for a graded test,
+    // how it came out - the teacher's table shows that instead of a version
+    // number. Expired attempts are closed on the way past.
+    const questions = isTest
+      ? testing.questionsFor(req.params.id, { withAnswers: true })
+      : [];
+
     res.json({
-      students: rows.map((row) =>
-        withDeadlineState({
+      students: rows.map((row) => {
+        let test = null;
+        if (isTest) {
+          let attempt = row.attemptId
+            ? {
+                id: row.attemptId,
+                assignmentId: Number(req.params.id),
+                studentId: row.studentId,
+                startedAt: row.attemptStarted,
+                submittedAt: row.attemptSubmitted,
+              }
+            : null;
+          if (attempt) {
+            attempt = testing.closeIfExpired(attempt, assignment.timeLimitMinutes);
+          }
+          test = {
+            state: !attempt ? "not-started" : attempt.submittedAt ? "submitted" : "in-progress",
+            startedAt: attempt ? attempt.startedAt : null,
+            submittedAt: attempt ? attempt.submittedAt : null,
+            summary: attempt
+              ? testing.checkAttempt(
+                  questions,
+                  testing.answersFor(attempt.id),
+                  assignment.testKind
+                ).summary
+              : null,
+          };
+        }
+
+        return withDeadlineState({
           ...row,
-          hasSubmitted: isFreeform ? row.fileCount > 0 : row.status === "submitted",
-        })
-      ),
+          test,
+          lastActivity: isTest
+            ? (test && (test.submittedAt || test.startedAt)) || null
+            : row.lastActivity,
+          hasSubmitted: isFreeform
+            ? row.fileCount > 0
+            : isTest
+              ? !!(test && test.state === "submitted")
+              : row.status === "submitted",
+        });
+      }),
       groupRules: rules.rulesForAssignment(req.params.id),
+      testKind: isTest ? assignment.testKind : null,
     });
   }
 );

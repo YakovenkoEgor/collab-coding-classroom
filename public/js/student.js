@@ -21,10 +21,10 @@ async function api(path, opts = {}) {
   });
   if (res.status === 401) {
     window.location.href = "/login.html";
-    throw new Error("Not logged in");
+    throw new Error("Вы не авторизованы");
   }
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Request failed");
+  if (!res.ok) throw new Error(data.error || "Запрос не выполнен");
   return data;
 }
 
@@ -41,7 +41,7 @@ async function loadMe() {
   const { user } = await api("/api/auth/me");
   if (!user) { window.location.href = "/login.html"; return; }
   currentUser = user;
-  document.getElementById("whoami").textContent = `${user.displayName} (student)`;
+  document.getElementById("whoami").textContent = `${user.displayName} (ученик)`;
 }
 
 async function loadAssignments() {
@@ -50,7 +50,7 @@ async function loadAssignments() {
   const container = document.getElementById("assignment-list");
   container.innerHTML = "";
   if (list.length === 0) {
-    container.innerHTML = '<p class="muted">No assignments yet.</p>';
+    container.innerHTML = '<p class="muted">Заданий пока нет.</p>';
     return;
   }
   list.forEach((a) => {
@@ -59,7 +59,7 @@ async function loadAssignments() {
     div.innerHTML = `<div class="title">${escapeHtml(a.title)}${deadlineMark(a)}</div>
       <div class="meta">${typeBadge(a.type)} ${
         a.deadline
-          ? "due " + formatDeadline(a.deadline)
+          ? "до " + formatDeadline(a.deadline)
           : new Date(a.created_at).toLocaleDateString()
       }</div>`;
     div.onclick = () => selectAssignment(a);
@@ -108,7 +108,7 @@ function escapeHtml(str) {
 // Assignment types
 // ---------------------------------------------------------------------
 
-const TYPE_LABEL = { code: "Code", text: "Text", freeform: "Free-form" };
+const TYPE_LABEL = { code: "Код", text: "Текст", freeform: "Произвольное", test: "Тест" };
 
 // Version names, mirrored from routes/submissions.js
 const MAX_VERSION_TITLE = 80;
@@ -138,19 +138,19 @@ function renderWorkCard() {
   const isText = assignmentType() === "text";
   return `
     <div class="card">
-      <h3>${isText ? "Your answer" : "Code editor"}</h3>
+      <h3>${isText ? "Ваш ответ" : "Редактор кода"}</h3>
       ${
         isText
-          ? '<textarea id="text-editor" class="text-editor" placeholder="Write your answer here…"></textarea>'
+          ? '<textarea id="text-editor" class="text-editor" placeholder="Напишите ответ здесь…"></textarea>'
           : `<div class="editor-layout" id="editor-layout">
                <div class="file-tree">
-                 <div class="file-tree-header">Project</div>
+                 <div class="file-tree-header">Проект</div>
                  <div id="file-list"></div>
                  <div class="file-tree-actions">
-                   <button class="secondary" id="new-file-btn">+ New file</button>
+                   <button class="secondary" id="new-file-btn">+ Новый файл</button>
                    <button class="secondary" id="add-local-file-btn"
                            title="Взять файл с этого компьютера и положить в проект">
-                     + Add local file
+                     + Файл с компьютера
                    </button>
                  </div>
                  <input type="file" id="local-file-input" multiple hidden>
@@ -162,13 +162,13 @@ function renderWorkCard() {
       }
       <div id="readonly-banner"></div>
       <div class="toolbar">
-        ${isText ? "" : '<button id="run-btn">▶ Run</button>'}
+        ${isText ? "" : '<button id="run-btn">▶ Запустить</button>'}
         ${isText ? "" : '<button class="secondary" id="console-stop" hidden>■ Стоп</button>'}
         <input id="version-title" maxlength="${MAX_VERSION_TITLE}" style="flex:1;min-width:140px"
                placeholder="Название версии (необязательно)">
         <button class="secondary" id="rename-version-btn" hidden>Переименовать</button>
-        <button class="secondary" id="save-draft-btn">Save draft</button>
-        <button id="submit-btn">Submit</button>
+        <button class="secondary" id="save-draft-btn">Сохранить черновик</button>
+        <button id="submit-btn">Сдать</button>
       </div>
       ${
         isText
@@ -183,8 +183,8 @@ function renderWorkCard() {
     </div>
 
     <div class="card">
-      <h3>Version history</h3>
-      <div class="version-list" id="version-list"><p class="muted">Loading…</p></div>
+      <h3>История версий</h3>
+      <div class="version-list" id="version-list"><p class="muted">Загрузка…</p></div>
     </div>`;
 }
 
@@ -192,19 +192,304 @@ function renderWorkCard() {
 function renderUploadCard() {
   return `
     <div class="card">
-      <h3>Your files</h3>
+      <h3>Ваши файлы</h3>
       <p class="muted" style="font-size:13px">
-        Attach up to ${MAX_STUDENT_FILES} files, ${MAX_STUDENT_MB} MB each.
-        Uploading a file with a name you already used replaces it.
-        Archives and programs (zip, rar, exe …) are not accepted.
+        Можно приложить до ${MAX_STUDENT_FILES} файлов, по ${MAX_STUDENT_MB} МБ каждый.
+        Файл с уже использованным именем заменяет предыдущий.
+        Архивы и программы (zip, rar, exe и подобные) не принимаются.
       </p>
-      <div id="upload-list"><p class="muted">Loading…</p></div>
+      <div id="upload-list"><p class="muted">Загрузка…</p></div>
       <div class="toolbar">
         <input type="file" id="upload-input" multiple>
-        <button id="upload-btn" disabled>Attach</button>
+        <button id="upload-btn" disabled>Приложить</button>
       </div>
       <div id="upload-message"></div>
     </div>`;
+}
+
+
+// ---------------------------------------------------------------------
+// Tests
+//
+// A test is always visible in the list, but it can only be solved between
+// "available from" and the deadline. Inside that window the student presses
+// one button to open the questions - which is also when the clock starts.
+// Answers are saved as they are given, so when the time runs out there is
+// nothing left to send: the attempt is simply closed.
+// ---------------------------------------------------------------------
+
+let testState = null; // the last state the server reported
+let testTicker = null; // the countdown's interval
+let testSubmitting = false;
+
+function isSurveyAssignment() {
+  return assignmentType() === "test" && activeAssignment.test_kind === "survey";
+}
+
+function stopTestTicker() {
+  if (testTicker) {
+    clearInterval(testTicker);
+    testTicker = null;
+  }
+}
+
+function formatClock(seconds) {
+  const safe = Math.max(0, seconds);
+  const mm = String(Math.floor(safe / 60)).padStart(2, "0");
+  const ss = String(safe % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
+// Timestamps written by the database are UTC; the window dates are local
+// strings the teacher typed (see testing.js).
+function formatStoredTime(value) {
+  return value
+    ? new Date(`${String(value).replace(" ", "T")}Z`).toLocaleString()
+    : "";
+}
+
+function renderTestCard() {
+  return `
+    <div class="card" id="test-card">
+      <h3>${isSurveyAssignment() ? "Опрос" : "Тест"}</h3>
+      <div id="test-area"><p class="muted">Загрузка…</p></div>
+    </div>`;
+}
+
+async function loadTest() {
+  const area = document.getElementById("test-area");
+  if (!area) return;
+  try {
+    testState = await api(`/api/tests/assignment/${activeAssignment.id}`);
+  } catch (err) {
+    area.innerHTML = `<p class="muted">Не удалось загрузить тест: ${escapeHtml(
+      err.message
+    )}</p>`;
+    return;
+  }
+  renderTest();
+}
+
+function renderTest() {
+  const area = document.getElementById("test-area");
+  if (!area || !testState) return;
+  stopTestTicker();
+
+  const { availability, state } = testState;
+  const windowNote = `<p class="muted" style="font-size:13px">
+      ${availability.from ? `Доступен с ${formatDeadline(availability.from)}. ` : ""}
+      ${availability.to ? `Решить нужно до ${formatDeadline(availability.to)}. ` : ""}
+      На решение ${testState.assignment.timeLimitMinutes} мин,
+      вопросов: ${testState.questionCount}.
+    </p>`;
+
+  // Outside the window the questions are not even loaded - the server does
+  // not send them.
+  if (!availability.open && state !== "submitted") {
+    area.innerHTML = `${windowNote}
+      <div class="warning-banner${availability.reason === "late" ? " overdue" : ""}">
+        <strong>${
+          availability.reason === "late"
+            ? "Дедлайн для решения уже истёк"
+            : "Тест ещё не доступен для решения"
+        }</strong>
+      </div>`;
+    return;
+  }
+
+  if (state === "not-started") {
+    area.innerHTML = `${windowNote}
+      <p class="muted">
+        Вопросы откроются после нажатия кнопки, и с этого момента пойдёт время.
+        Пройти тест можно один раз.
+      </p>
+      <button id="test-start-btn">Показать вопросы и начать</button>`;
+    document.getElementById("test-start-btn").onclick = startTest;
+    return;
+  }
+
+  if (state === "submitted") {
+    const when = formatStoredTime(testState.submittedAt);
+    area.innerHTML = `${windowNote}
+      <div class="form-message success">Ответы отправлены${when ? " " + when : ""}.</div>
+      ${renderTestQuestionList({ readOnly: true })}`;
+    return;
+  }
+
+  // In progress: the clock, the questions, and a way to finish early.
+  area.innerHTML = `${windowNote}
+    <div class="test-timer" id="test-timer">${formatClock(testState.secondsLeft)}</div>
+    ${renderTestQuestionList({ readOnly: false })}
+    <div class="toolbar">
+      <button id="test-submit-btn">Завершить и отправить</button>
+    </div>`;
+  wireTestInputs();
+  document.getElementById("test-submit-btn").onclick = () => submitTest(false);
+  startTestTicker();
+}
+
+// The questions, with whatever this student has already answered.
+function renderTestQuestionList({ readOnly }) {
+  const answers = new Map(testState.answers.map((a) => [a.questionId, a]));
+  const kindLabel = {
+    single: "один ответ",
+    multiple: "несколько ответов",
+    open: "открытый ответ",
+  };
+
+  return `<div class="test-questions">${testState.questions
+    .map((question, index) => {
+      const answer = answers.get(question.id) || { optionIds: [], textAnswer: "" };
+      const body =
+        question.kind === "open"
+          ? `<textarea class="test-open" data-question="${question.id}" rows="3"
+                       placeholder="Ваш ответ"${readOnly ? " disabled" : ""}>${escapeHtml(
+              answer.textAnswer
+            )}</textarea>`
+          : `<div class="test-options">${question.options
+              .map(
+                (option) => `
+            <label class="test-option">
+              <input type="${question.kind === "single" ? "radio" : "checkbox"}"
+                     name="q-${question.id}" value="${option.id}"
+                     data-question="${question.id}"
+                     ${answer.optionIds.includes(option.id) ? "checked" : ""}
+                     ${readOnly ? "disabled" : ""}>
+              <span>${escapeHtml(option.body)}</span>
+            </label>`
+              )
+              .join("")}</div>`;
+
+      return `
+        <div class="test-question-view">
+          <div class="test-question-head">
+            <span class="tq-number">${index + 1}</span>
+            <span class="muted" style="font-size:12px">${kindLabel[question.kind]}</span>
+          </div>
+          <div class="test-question-body">${escapeHtml(question.body)}</div>
+          ${body}
+        </div>`;
+    })
+    .join("")}</div>`;
+}
+
+function wireTestInputs() {
+  const area = document.getElementById("test-area");
+  if (!area) return;
+
+  area.querySelectorAll(".test-options input").forEach((input) => {
+    input.onchange = () => {
+      const questionId = Number(input.dataset.question);
+      const chosen = Array.from(
+        area.querySelectorAll(`input[name="q-${questionId}"]:checked`)
+      ).map((el) => Number(el.value));
+      saveTestAnswer({ questionId, optionIds: chosen });
+    };
+  });
+
+  // Text is saved when the student leaves the box rather than on every key:
+  // one request per answer, and the last word still gets in because every box
+  // is read again when the test is handed in.
+  area.querySelectorAll(".test-open").forEach((box) => {
+    box.onchange = () =>
+      saveTestAnswer({ questionId: Number(box.dataset.question), textAnswer: box.value });
+  });
+}
+
+// Keeps the local copy in step with what was sent, so a re-render (after the
+// clock stops, say) shows the same answers.
+function rememberAnswer(payload) {
+  const existing = testState.answers.find((a) => a.questionId === payload.questionId);
+  const value = {
+    questionId: payload.questionId,
+    optionIds: payload.optionIds || [],
+    textAnswer: payload.textAnswer || "",
+  };
+  if (existing) Object.assign(existing, value);
+  else testState.answers.push(value);
+}
+
+async function saveTestAnswer(payload) {
+  rememberAnswer(payload);
+  try {
+    const result = await api(`/api/tests/assignment/${activeAssignment.id}/answer`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+    if (typeof result.secondsLeft === "number") {
+      testState.secondsLeft = result.secondsLeft;
+    }
+  } catch (err) {
+    // The usual reason is that the time ran out between the last tick and
+    // this answer; reload to show the closed test rather than pretend.
+    const expired = /Время вышло/.test(err.message);
+    await loadTest();
+    if (!expired) alert("Не удалось сохранить ответ: " + err.message);
+  }
+}
+
+async function startTest() {
+  const button = document.getElementById("test-start-btn");
+  if (button) button.disabled = true;
+  try {
+    const started = await api(`/api/tests/assignment/${activeAssignment.id}/start`, {
+      method: "POST",
+    });
+    testState = { ...testState, ...started, state: "in-progress" };
+    renderTest();
+  } catch (err) {
+    alert(err.message);
+    await loadTest();
+  }
+}
+
+function startTestTicker() {
+  stopTestTicker();
+  testTicker = setInterval(() => {
+    testState.secondsLeft -= 1;
+    const clock = document.getElementById("test-timer");
+    if (clock) {
+      clock.textContent = formatClock(testState.secondsLeft);
+      if (testState.secondsLeft <= 60) clock.classList.add("urgent");
+    }
+    if (testState.secondsLeft <= 0) {
+      stopTestTicker();
+      submitTest(true);
+    }
+  }, 1000);
+}
+
+// byClock=true is the automatic hand-in: the answers are already on the
+// server, so this only closes the attempt.
+async function submitTest(byClock) {
+  if (testSubmitting) return;
+  if (!byClock && !confirm("Завершить тест? Изменить ответы после этого нельзя.")) return;
+  testSubmitting = true;
+  stopTestTicker();
+
+  // Whatever is in the open-answer boxes but not yet sent - the student may
+  // well be typing when the clock runs out.
+  const area = document.getElementById("test-area");
+  if (area) {
+    const pending = Array.from(area.querySelectorAll(".test-open")).map((box) =>
+      saveTestAnswer({
+        questionId: Number(box.dataset.question),
+        textAnswer: box.value,
+      })
+    );
+    await Promise.allSettled(pending);
+  }
+
+  try {
+    await api(`/api/tests/assignment/${activeAssignment.id}/submit`, { method: "POST" });
+  } catch {
+    // Already closed by the server - the reload below shows that.
+  }
+  testSubmitting = false;
+  await loadTest();
+  await refreshDeadlineState();
+  await loadGrade();
+  if (byClock) alert("Время вышло. Ваши ответы отправлены.");
 }
 
 // ---------------------------------------------------------------------
@@ -264,17 +549,24 @@ function renderDeadlineNotice(assignment) {
 }
 
 async function selectAssignment(assignment) {
-  // Leaving the assignment abandons whatever was running on it.
+  // Leaving the assignment abandons whatever was running on it. The test
+  // countdown stops too - the attempt itself keeps running on the server,
+  // which is what closes it when the time is up.
   stopRun();
   closeRunStream();
+  stopTestTicker();
+  testState = null;
   activeAssignment = assignment;
   selectedVersionForMessage = null;
   activeVersion = null;
   await loadAssignments(); // re-render sidebar highlight
   await renderMainPanel(); // awaits the editor so loadVersions can fill it
   await Promise.all([
-    // Free-form work has no versions - its files are loaded by setupUploads().
-    assignmentType() === "freeform" ? Promise.resolve() : loadVersions(),
+    // Free-form work has no versions - its files are loaded by setupUploads();
+    // a test has none either, and loads through loadTest().
+    assignmentType() === "freeform" || assignmentType() === "test"
+      ? Promise.resolve()
+      : loadVersions(),
     loadDiscussion(),
     loadAssignmentFiles(),
     loadGrade(),
@@ -296,6 +588,12 @@ function maxScore() {
 async function loadGrade() {
   const box = document.getElementById("grade-box");
   if (!box) return;
+  // A survey is not marked at all - saying "оценка не выставлена" about it
+  // would be wrong rather than just empty.
+  if (isSurveyAssignment()) {
+    box.innerHTML = "";
+    return;
+  }
   let grade = null;
   try {
     ({ grade } = await api(`/api/grades/assignment/${activeAssignment.id}`));
@@ -338,26 +636,34 @@ async function renderMainPanel() {
       <div id="assignment-files"></div>
       ${
         assignmentType() === "code"
-          ? '<p class="muted" style="font-size:12px">Note: a file\'s public class must match its file name — <code>Main.java</code> holds <code>public class Main</code>.</p>'
+          ? '<p class="muted" style="font-size:12px">Помните: public-класс должен называться так же, как файл — в <code>Main.java</code> лежит <code>public class Main</code>.</p>'
           : ""
       }
     </div>
 
-    ${assignmentType() === "freeform" ? renderUploadCard() : renderWorkCard()}
+    ${
+      assignmentType() === "test"
+        ? renderTestCard()
+        : assignmentType() === "freeform"
+          ? renderUploadCard()
+          : renderWorkCard()
+    }
 
     <div class="card">
-      <h3>Discussion with teacher</h3>
+      <h3>Обсуждение с преподавателем</h3>
       <div id="linked-version-banner"></div>
       <div class="discussion" id="discussion-list"></div>
       <div class="toolbar">
-        <input id="message-input" placeholder="Write a message…" style="flex:1">
-        <button id="send-message-btn">Send</button>
+        <input id="message-input" placeholder="Напишите сообщение…" style="flex:1">
+        <button id="send-message-btn">Отправить</button>
       </div>
     </div>
   `;
 
   const type = assignmentType();
-  if (type === "code") {
+  if (type === "test") {
+    await loadTest();
+  } else if (type === "code") {
     await setupEditor();
     document.getElementById("new-file-btn").onclick = addFile;
     document.getElementById("add-local-file-btn").onclick = addLocalFile;
@@ -384,7 +690,7 @@ async function renderMainPanel() {
     setupUploads();
   }
 
-  if (type !== "freeform") {
+  if (type !== "freeform" && type !== "test") {
     document.getElementById("save-draft-btn").onclick = () => saveVersion("draft");
     document.getElementById("submit-btn").onclick = () => saveVersion("submitted");
     document.getElementById("rename-version-btn").onclick = renameVersion;
@@ -707,7 +1013,7 @@ function renderFileTree() {
     if (!isJavaFile(file.filename)) {
       const badge = document.createElement("span");
       badge.className = "data-badge" + (isBinaryFile(file) ? " binary" : "");
-      badge.textContent = isBinaryFile(file) ? "bin" : "data";
+      badge.textContent = isBinaryFile(file) ? "двоич." : "данные";
       badge.title = isBinaryFile(file)
         ? "Двоичный файл — открыть в редакторе нельзя, можно скачать"
         : "Файл данных — программа может читать и перезаписывать его";
@@ -731,13 +1037,13 @@ function renderFileTree() {
       const badge = document.createElement("span");
       badge.className = "entry-badge";
       badge.textContent = "main";
-      badge.title = "Run starts from this file";
+      badge.title = "Запуск начинается с этого файла";
       div.appendChild(badge);
     } else if (isEditable() && projectFiles.length > 1) {
       const del = document.createElement("button");
       del.className = "delete-file";
       del.textContent = "×";
-      del.title = "Delete file";
+      del.title = "Удалить файл";
       del.onclick = (e) => {
         e.stopPropagation();
         deleteFile(file.filename);
@@ -761,8 +1067,8 @@ function renderFileTree() {
       (projectFiles.find((f) => !isJavaFile(f.filename) && !isBinaryFile(f)) || {})
         .filename || "data.txt";
     hint.textContent = entry
-      ? `▶ Run compiles every .java file and starts from ${entry}. Файлы данных лежат рядом с программой: new File("${example}") — это относительный путь.`
-      : "▶ Add a .java file to run the project";
+      ? `▶ «Запустить» компилирует все файлы .java и стартует с ${entry}. Файлы данных лежат рядом с программой: new File("${example}") — это относительный путь.`
+      : "▶ Добавьте файл .java, чтобы проект можно было запустить";
   }
 }
 
@@ -843,7 +1149,7 @@ function addFile() {
   const isJava = isJavaFile(filename);
   if (isJava && !JAVA_FILENAME.test(filename)) {
     alert(
-      "A Java file name must start with a letter or underscore, contain only letters, digits and underscores, and end with .java — for example Helper.java"
+      "Имя файла Java должно начинаться с буквы или подчёркивания, содержать только буквы, цифры и подчёркивания и оканчиваться на .java — например Helper.java"
     );
     return;
   }
@@ -852,7 +1158,7 @@ function addFile() {
     return;
   }
   if (projectFiles.some((f) => f.filename === filename)) {
-    alert(`"${filename}" already exists in this project.`);
+    alert(`Файл «${filename}» уже есть в проекте.`);
     return;
   }
 
@@ -902,7 +1208,7 @@ async function onLocalFilesChosen(event) {
     const filename = file.name;
     if (isJavaFile(filename)) {
       if (!JAVA_FILENAME.test(filename)) {
-        alert(`"${filename}" — недопустимое имя для файла Java.`);
+        alert(`«${filename}» — недопустимое имя для файла Java.`);
         continue;
       }
     } else if (!isAllowedDataName(filename)) {
@@ -952,7 +1258,7 @@ async function onLocalFilesChosen(event) {
 function deleteFile(filename) {
   if (!isEditable()) return;
   if (projectFiles.length <= 1) return;
-  if (!confirm(`Delete ${filename}? This only affects your unsaved project.`)) return;
+  if (!confirm(`Удалить ${filename}? Это затронет только несохранённый проект.`)) return;
 
   projectFiles = projectFiles.filter((f) => f.filename !== filename);
   if (entryJavaFile === filename) entryJavaFile = null;
@@ -1048,7 +1354,7 @@ async function loadAssignmentFiles() {
     return;
   }
   box.innerHTML =
-    `<div class="file-list"><h4>Handouts</h4>` +
+    `<div class="file-list"><h4>Методички</h4>` +
     files
       .map(
         (f) =>
@@ -1173,10 +1479,10 @@ function applyEditMode() {
   }
   const latest = latestVersion();
   banner.innerHTML = `<p class="muted" style="font-size:12px">
-      Viewing v${activeVersion.version_number} — older versions are read-only.
-      Continue from v${latest.version_number} to keep working.
+      Открыта версия v${activeVersion.version_number} — старые версии доступны только для чтения.
+      Чтобы продолжить работу, вернитесь к v${latest.version_number}.
     </p>
-    <button class="secondary" id="back-to-latest-btn">Back to latest (v${latest.version_number})</button>`;
+    <button class="secondary" id="back-to-latest-btn">К последней версии (v${latest.version_number})</button>`;
   document.getElementById("back-to-latest-btn").onclick = () => openVersion(latest);
 }
 
@@ -1214,15 +1520,17 @@ async function loadVersions() {
   if (!list) return;
   applyEditMode();
   if (versions.length === 0) {
-    list.innerHTML = '<p class="muted">No versions saved yet.</p>';
+    list.innerHTML = '<p class="muted">Сохранённых версий пока нет.</p>';
     return;
   }
   list.innerHTML = "";
   versions.forEach((v, idx) => {
     const div = document.createElement("div");
     div.className = "version-item" + (activeVersion && activeVersion.id === v.id ? " active" : "");
-    const tag = idx === 0 ? " — latest" : " — read-only";
-    div.textContent = `${versionLabel(v)} — ${v.status} — ${new Date(v.created_at).toLocaleString()}${tag}`;
+    const tag = idx === 0 ? " — последняя" : " — только чтение";
+    div.textContent = `${versionLabel(v)} — ${versionStatusLabel(v.status)} — ${new Date(
+      v.created_at
+    ).toLocaleString()}${tag}`;
     div.onclick = () => openVersion(v);
     list.appendChild(div);
   });
@@ -1245,7 +1553,7 @@ function renderOutput(stdout, stderr, status) {
   target.textContent = "";
   const statusLine = document.createElement("div");
   statusLine.className = "status-line";
-  statusLine.textContent = `Status: ${status || "—"}`;
+  statusLine.textContent = `Статус: ${runStatusLabel(status)}`;
   target.appendChild(statusLine);
   const body = document.createElement("div");
   body.textContent = (stdout || "") + (stderr ? "\n" + stderr : "") || "(no output)";
@@ -1286,7 +1594,7 @@ function setConsoleRunning(running) {
   if (stop) stop.hidden = !running;
   if (btn) {
     btn.disabled = running;
-    btn.textContent = running ? "Running…" : "▶ Run";
+    btn.textContent = running ? "Выполняется…" : "▶ Запустить";
   }
 }
 
@@ -1395,7 +1703,7 @@ async function saveVersion(status) {
   const isText = assignmentType() === "text";
   if (!isText) await editorReady;
   if (!isEditable()) {
-    alert("This is an older version and can't be saved or submitted. Go back to your latest version first.");
+    alert("Это старая версия, её нельзя сохранить или сдать. Сначала вернитесь к последней версии.");
     return;
   }
   if (isText && textAnswer().trim() === "") {
@@ -1440,7 +1748,7 @@ async function saveVersion(status) {
     // Submitting clears the deadline warning, so refresh what depends on it.
     if (status === "submitted") await refreshDeadlineState();
   } catch (err) {
-    alert("Could not save: " + err.message);
+    alert("Не удалось сохранить: " + err.message);
     await loadVersions(); // re-sync in case another tab added a newer version
   } finally {
     applyEditMode();
@@ -1453,7 +1761,7 @@ async function loadDiscussion() {
   if (!list) return;
   list.innerHTML = "";
   if (messages.length === 0) {
-    list.innerHTML = '<p class="muted">No messages yet. Ask a question or share a note about your code.</p>';
+    list.innerHTML = '<p class="muted">Сообщений пока нет. Задайте вопрос или оставьте заметку о своей работе.</p>';
     return;
   }
   messages.forEach((m) => {
@@ -1461,12 +1769,12 @@ async function loadDiscussion() {
     div.className = "message " + (m.authorRole === "teacher" ? "teacher" : "student");
     let linked = "";
     if (m.linkedVersion) {
-      linked = `<span class="linked-version" data-submission="${m.submission_id}">→ referring to v${m.linkedVersion}</span>`;
+      linked = `<span class="linked-version" data-submission="${m.submission_id}">→ к версии v${m.linkedVersion}</span>`;
     }
     // A student may delete only their own messages.
     const canDelete = currentUser && m.author_id === currentUser.id;
     const deleteBtn = canDelete
-      ? `<button class="delete-message" data-message="${m.id}" title="Delete message">×</button>`
+      ? `<button class="delete-message" data-message="${m.id}" title="Удалить сообщение">×</button>`
       : "";
     div.innerHTML = `<div class="meta">${escapeHtml(m.authorName)} · ${new Date(m.created_at).toLocaleString()}${deleteBtn}</div>
       <div class="body">${escapeHtml(m.body)}</div>${linked}`;
@@ -1476,12 +1784,12 @@ async function loadDiscussion() {
 
   list.querySelectorAll(".delete-message").forEach((el) => {
     el.onclick = async () => {
-      if (!confirm("Delete this message? This can't be undone.")) return;
+      if (!confirm("Удалить сообщение? Это действие нельзя отменить.")) return;
       try {
         await api(`/api/discussions/messages/${el.dataset.message}`, { method: "DELETE" });
         await loadDiscussion();
       } catch (err) {
-        alert("Could not delete message: " + err.message);
+        alert("Не удалось удалить сообщение: " + err.message);
       }
     };
   });
@@ -1507,7 +1815,7 @@ async function sendMessage() {
     input.value = "";
     await loadDiscussion();
   } catch (err) {
-    alert("Could not send message: " + err.message);
+    alert("Не удалось отправить сообщение: " + err.message);
   }
 }
 

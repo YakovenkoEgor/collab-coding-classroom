@@ -11,7 +11,7 @@ function normalizeDeadline(deadline) {
   if (typeof deadline !== "string" || deadline.trim() === "") return null;
   const normalized = deadline.trim().replace("T", " ").slice(0, 16);
   if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(normalized)) {
-    throw new DeadlineError("Deadline must look like 2026-09-01 18:00");
+    throw new DeadlineError("Дата должна выглядеть так: 2026-09-01 18:00");
   }
   return normalized;
 }

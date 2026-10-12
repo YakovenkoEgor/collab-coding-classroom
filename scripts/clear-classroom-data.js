@@ -48,6 +48,8 @@ const counts = {
     .get().c,
   submission_uploads: db.prepare("SELECT COUNT(*) c FROM submission_uploads").get().c,
   notifications: db.prepare("SELECT COUNT(*) c FROM notifications").get().c,
+  test_questions: db.prepare("SELECT COUNT(*) c FROM test_questions").get().c,
+  test_attempts: db.prepare("SELECT COUNT(*) c FROM test_attempts").get().c,
 };
 
 const teachers = db.prepare("SELECT COUNT(*) c FROM users WHERE role = 'teacher'").get().c;
@@ -84,6 +86,12 @@ const wipe = db.transaction(() => {
   db.prepare("DELETE FROM assignment_starter_files").run();
   db.prepare("DELETE FROM assignment_group_rules").run();
   db.prepare("DELETE FROM submission_uploads").run();
+  // Test answers point at attempts and questions, both of which point at the
+  // assignment - children first, as everywhere else here.
+  db.prepare("DELETE FROM test_answers").run();
+  db.prepare("DELETE FROM test_attempts").run();
+  db.prepare("DELETE FROM test_options").run();
+  db.prepare("DELETE FROM test_questions").run();
   db.prepare("DELETE FROM assignments").run();
   // notifications.created_by points at the teacher who wrote them, so these
   // have to go before any account does.
@@ -127,6 +135,10 @@ for (const table of [
   "assignment_group_rules",
   "submission_uploads",
   "notifications",
+  "test_questions",
+  "test_options",
+  "test_attempts",
+  "test_answers",
 ]) {
   console.log(
     `  ${table.padEnd(26)} ${db.prepare(`SELECT COUNT(*) c FROM ${table}`).get().c}`
