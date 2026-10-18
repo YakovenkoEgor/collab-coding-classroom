@@ -269,30 +269,32 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
           editing ? escapeHtml(assignment.description || "") : ""
         }</textarea>
       </div>
+      ${
+        editing
+          ? `<div class="form-row">
+               <label>Прикреплённые методички</label>
+               <div id="existing-handouts"></div>
+             </div>`
+          : ""
+      }
       <div class="form-row">
-        <label>Максимальный балл</label>
-        <input type="number" id="a-max-score" min="${MIN_MAX_SCORE}" max="${MAX_MAX_SCORE}" step="1"
-               value="${editing ? assignment.max_score : DEFAULT_MAX_SCORE}">
+        <label>${editing ? "Добавить методички" : "Методички (необязательно)"}</label>
+        <input type="file" id="a-files" multiple accept="${ALLOWED_UPLOAD_EXTENSIONS.join(",")}">
         <span class="muted" style="font-size:12px">
-          Целое число от ${MIN_MAX_SCORE} до ${MAX_MAX_SCORE}. До него считает поле
-          оценки для всех групп, у которых ниже не задано своё значение.
+          PDF, DOCX и подобные документы — до ${MAX_UPLOAD_MB} МБ каждый,
+          не больше ${MAX_UPLOAD_FILES} файлов. Ученики смогут скачать их из задания.
         </span>
+        <div id="a-files-list"></div>
       </div>
       <div class="form-row">
-        <label>Дедлайн (необязательно)</label>
-        <input type="datetime-local" id="a-deadline" value="${
-          editing && assignment.deadline
-            ? escapeHtml(String(assignment.deadline).replace(" ", "T"))
-            : ""
-        }">
-        <span class="muted" style="font-size:12px">
-          Ученики, которые ещё не сдали, отмечаются, когда остаётся меньше двух
-          дней. Действует для всех групп, у которых ниже не задана своя дата.
-        </span>
-      </div>
-      <div class="form-row">
-        <label>Сроки и баллы по группам (необязательно)</label>
-        ${renderGroupRuleEditor(groups || [], ruleByGroup, groupsProblem)}
+        <label>Сроки и баллы</label>
+        ${renderGroupRuleEditor(
+          { deadline: editing ? assignment.deadline : null,
+            maxScore: editing ? assignment.max_score : DEFAULT_MAX_SCORE },
+          groups || [],
+          ruleByGroup,
+          groupsProblem
+        )}
       </div>
       <div class="form-row" id="starter-code-row">
         <label>Стартовый проект</label>
@@ -315,6 +317,20 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
           </div>
           <textarea id="a-starter" style="font-family: var(--font-mono); flex:1; height:260px; resize:vertical"></textarea>
         </div>
+      </div>
+      <div class="form-row" id="network-row">
+        <label class="checkbox-label">
+          <input type="checkbox" id="a-network"${
+            editing && assignment.network_access ? " checked" : ""
+          }>
+          Разрешить скачивание файлов по сети
+        </label>
+        <span class="muted" style="font-size:12px">
+          Программа ученика сможет обращаться по HTTP к файлам из раздела
+          «Файлы по сети». Ничего другого из песочницы не доступно: ни интернет,
+          ни этот сервер. Нужно для заданий на сетевое программирование.
+        </span>
+        <div id="network-files" class="muted" style="font-size:12px; margin-top:4px"></div>
       </div>
       <div class="form-row" id="starter-text-row" style="display:none">
         <label>Начальный текст (необязательно)</label>
@@ -361,23 +377,6 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
           Готовить здесь ничего не нужно.
         </span>
       </div>
-      ${
-        editing
-          ? `<div class="form-row">
-               <label>Прикреплённые методички</label>
-               <div id="existing-handouts"></div>
-             </div>`
-          : ""
-      }
-      <div class="form-row">
-        <label>${editing ? "Добавить методички" : "Методички (необязательно)"}</label>
-        <input type="file" id="a-files" multiple accept="${ALLOWED_UPLOAD_EXTENSIONS.join(",")}">
-        <span class="muted" style="font-size:12px">
-          PDF, DOCX и подобные документы — до ${MAX_UPLOAD_MB} МБ каждый,
-          не больше ${MAX_UPLOAD_FILES} файлов. Ученики смогут скачать их из задания.
-        </span>
-        <div id="a-files-list"></div>
-      </div>
       <button id="create-assignment-btn">${
         editing ? "Сохранить изменения" : "Создать задание"
       }</button>
@@ -399,15 +398,41 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
     document.getElementById("freeform-note-row").style.display =
       type === "freeform" ? "" : "none";
     document.getElementById("test-row").style.display = type === "test" ? "" : "none";
-    // A survey is never scored, so a maximum mark for it would mean nothing.
+    // Only a program can download anything, so the switch belongs to code work.
+    document.getElementById("network-row").style.display = type === "code" ? "" : "none";
+    // A survey is never scored, so the maximum-mark column means nothing for
+    // it - the deadlines in the same table still do, so only the column goes.
     const scored = !(type === "test" && kindSelect.value === "survey");
-    document.getElementById("a-max-score").closest(".form-row").style.display = scored
-      ? ""
-      : "none";
+    document
+      .querySelectorAll(".max-score-col")
+      .forEach((cell) => (cell.style.display = scored ? "" : "none"));
     if (type === "test") renderTestQuestions();
   };
-  typeSelect.onchange = applyTypeToForm;
+  // Both re-render the question list, which is rebuilt from testQuestions -
+  // so read the form back first or whatever has just been typed is lost.
+  // What the sandbox will actually be able to download, so the switch is not
+  // a promise about an empty folder.
+  (async () => {
+    const box = document.getElementById("network-files");
+    if (!box) return;
+    try {
+      const data = await api("/api/mirror");
+      box.innerHTML =
+        (data.files || []).length === 0
+          ? 'Сейчас не раздаётся ни одного файла — добавьте их в разделе «Файлы по сети».'
+          : "Доступно: " +
+            data.files.map((f) => `<code>${escapeHtml(f.url)}</code>`).join(", ");
+    } catch {
+      box.textContent = "";
+    }
+  })();
+
+  typeSelect.onchange = () => {
+    syncTestQuestions();
+    applyTypeToForm();
+  };
   kindSelect.onchange = () => {
+    syncTestQuestions();
     applyTypeToForm();
     renderTestQuestions(); // correct-answer controls appear and disappear with the kind
   };
@@ -489,6 +514,7 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
         starterText: document.getElementById("a-starter-text").value,
         deadline: document.getElementById("a-deadline").value,
         groupRules: collectGroupRules(),
+        networkAccess: document.getElementById("a-network").checked,
         removeFileIds: removedHandoutIds,
         ...(typeSelect.value === "test"
           ? {
@@ -574,6 +600,13 @@ function collectTestQuestions() {
   return testQuestions;
 }
 
+// A textarea that is exactly as tall as its content. Called on render and on
+// every keystroke; "auto" first so the box can shrink again after a deletion.
+function fitToText(area) {
+  area.style.height = "auto";
+  area.style.height = `${Math.max(area.scrollHeight, 32)}px`;
+}
+
 function renderTestQuestions() {
   const box = document.getElementById("t-questions");
   if (!box) return;
@@ -653,9 +686,14 @@ function renderTestQuestions() {
           <button type="button" class="secondary tq-add-option">+ Вариант</button>
         </div>`;
 
+    // The wording and the kind share the top line, the way a question reads:
+    // "this, asked like this". Everything the kind brings with it follows.
     node.innerHTML = `
       <div class="tq-head">
         <span class="tq-number">${index + 1}</span>
+        <textarea class="tq-body" rows="1" placeholder="Текст вопроса">${escapeHtml(
+          question.body
+        )}</textarea>
         <select class="tq-kind">
           ${TEST_QUESTION_KINDS.map(
             (k) =>
@@ -666,18 +704,24 @@ function renderTestQuestions() {
         </select>
         <button type="button" class="delete-file tq-remove" title="Удалить вопрос">×</button>
       </div>
-      <textarea class="tq-body" rows="2" placeholder="Текст вопроса">${escapeHtml(
-        question.body
-      )}</textarea>
       ${options}
       ${
         question.kind === "open" && graded
-          ? `<input class="tq-expected" value="${escapeHtml(question.expectedAnswer)}"
-                   placeholder="Ожидаемый ответ (необязательно — без него вопрос проверяете вы)">`
+          ? `<textarea class="tq-expected" rows="1"
+                   placeholder="Ожидаемый ответ (необязательно — без него вопрос проверяете вы)">${escapeHtml(
+                     question.expectedAnswer
+                   )}</textarea>`
           : ""
       }`;
 
     box.appendChild(node);
+  });
+
+  // Both free-text fields start one line tall and grow with what is typed -
+  // by wrapping or by a deliberate Enter - instead of carrying a resize grip.
+  box.querySelectorAll(".tq-body, .tq-expected").forEach((area) => {
+    fitToText(area);
+    area.oninput = () => fitToText(area);
   });
 
   // One handler per control, each syncing first so nothing typed is lost.
@@ -1260,23 +1304,25 @@ function testSummaryCell(row) {
 
 // ---------- Per-group deadlines and maximum scores ----------
 
-// The table inside the assignment form. Every study group gets a row; an
-// empty field means the group follows the assignment's own value, so clearing
-// both fields removes the exception on save.
-function renderGroupRuleEditor(groups, ruleByGroup, problem) {
+// The table inside the assignment form. The first row holds the assignment's
+// own deadline and maximum score; every study group gets a row below it, and
+// an empty field there means the group follows the default, so clearing both
+// fields removes the exception on save.
+function renderGroupRuleEditor(defaults, groups, ruleByGroup, problem) {
   // Told apart on purpose: "the class has no groups" is a normal state, while
   // "the list could not be read" is a fault worth naming.
-  if (problem) {
-    return `<div class="form-message error">
-        Не удалось загрузить учебные группы: ${escapeHtml(problem)}.
-      </div>`;
-  }
-  if (groups.length === 0) {
-    return `<span class="muted" style="font-size:12px">
-        Учебных групп пока нет. Добавьте учеников с указанием группы — и здесь
-        можно будет задать каждой группе свой срок и свой максимальный балл.
-      </span>`;
-  }
+  const note = problem
+    ? `<div class="form-message error">
+         Не удалось загрузить учебные группы: ${escapeHtml(problem)}.
+       </div>`
+    : groups.length === 0
+      ? `<span class="muted" style="font-size:12px">
+           Учебных групп пока нет. Добавьте учеников с указанием группы — и здесь
+           можно будет задать каждой группе свой срок и свой максимальный балл.
+         </span>`
+      : `<span class="muted" style="font-size:12px">
+           Пустое поле в строке группы означает, что для неё действует значение по умолчанию.
+         </span>`;
 
   const rows = groups
     .map((groupName) => {
@@ -1289,18 +1335,29 @@ function renderGroupRuleEditor(groups, ruleByGroup, problem) {
       return `<tr data-group="${escapeHtml(groupName)}">
           <td>${escapeHtml(groupName)}</td>
           <td><input type="datetime-local" class="group-deadline" value="${deadline}"></td>
-          <td><input type="number" class="group-max-score" step="1"
+          <td class="max-score-col"><input type="number" class="group-max-score" step="1"
                      min="${MIN_MAX_SCORE}" max="${MAX_MAX_SCORE}"
                      placeholder="—" value="${maxScore}"></td>
         </tr>`;
     })
     .join("");
 
-  return `<span class="muted" style="font-size:12px">
-        Пустое поле означает, что для группы действует общее значение задания.
-      </span>
+  const defaultDeadline = defaults.deadline
+    ? escapeHtml(String(defaults.deadline).replace(" ", "T"))
+    : "";
+
+  return `${note}
       <table class="group-rules">
-        <thead><tr><th>Учебная группа</th><th>Дедлайн</th><th>Макс. балл</th></tr></thead>
+        <thead><tr><th>Учебная группа</th><th>Дедлайн</th><th class="max-score-col">Макс. балл</th></tr></thead>
+        <tbody>
+          <tr class="group-rules-default">
+            <td>Значение по умолчанию</td>
+            <td><input type="datetime-local" id="a-deadline" value="${defaultDeadline}"></td>
+            <td class="max-score-col"><input type="number" id="a-max-score" step="1"
+                       min="${MIN_MAX_SCORE}" max="${MAX_MAX_SCORE}"
+                       value="${defaults.maxScore}"></td>
+          </tr>
+        </tbody>
         <tbody id="group-rules-body">${rows}</tbody>
       </table>`;
 }
@@ -2262,8 +2319,189 @@ async function deleteNotification(existing) {
   }
 }
 
+// ---------- The file mirror: what the sandbox can download from ----------
+//
+// The sidebar shows how many files are being served; the panel is where the
+// teacher adds them and copies their URLs.
+
+let mirrorFiles = [];
+
+async function loadMirrorManage() {
+  const container = document.getElementById("mirror-manage");
+  if (!container) return;
+  try {
+    const data = await api("/api/mirror");
+    mirrorFiles = data.files || [];
+    container.innerHTML =
+      mirrorFiles.length === 0
+        ? '<p class="muted">Файлы не раздаются.</p>'
+        : `<p class="muted">Раздаётся файлов: ${mirrorFiles.length}. Адрес: <code>${escapeHtml(
+            data.baseUrl
+          )}</code></p>`;
+  } catch (err) {
+    container.innerHTML = `<p class="muted">Не удалось получить список: ${escapeHtml(
+      err.message
+    )}</p>`;
+  }
+}
+
+function mirrorMessage(text, kind) {
+  const box = document.getElementById("mirror-message");
+  if (box) box.innerHTML = `<div class="form-message ${kind}">${escapeHtml(text)}</div>`;
+}
+
+async function renderMirrorPanel() {
+  activeAssignment = null;
+  activeStudent = null;
+  activeProfile = null;
+  activeNotification = null;
+  loadAssignments();
+  loadStudentManage();
+  loadNotificationManage();
+
+  const main = document.getElementById("main-content");
+  main.innerHTML = `
+    <div class="card">
+      <h2>Файлы по сети</h2>
+      <p class="muted" style="font-size:13px">
+        Эти файлы программа ученика может скачать по HTTP — так выполняются задания
+        на работу с сетью. Больше из песочницы не доступно ничего: ни интернет, ни
+        этот сервер. Доступ включается галочкой «Разрешить скачивание файлов по сети»
+        в самом задании.
+      </p>
+      <div id="mirror-message"></div>
+      <div id="mirror-status" class="muted" style="font-size:13px">Проверяем раздачу…</div>
+      <div class="form-row" style="margin-top:12px">
+        <label>Добавить файлы</label>
+        <input type="file" id="mirror-files" multiple>
+        <span class="muted" style="font-size:12px">
+          Только текстовые данные: txt, csv, json, xml и подобные, либо без расширения.
+          Файл с тем же именем заменяется.
+        </span>
+      </div>
+      <button id="mirror-upload-btn">Загрузить</button>
+      <div id="mirror-list" style="margin-top:16px"></div>
+    </div>
+  `;
+
+  document.getElementById("mirror-upload-btn").onclick = uploadMirrorFiles;
+  renderMirrorList();
+  refreshMirrorStatus();
+}
+
+async function refreshMirrorStatus() {
+  const box = document.getElementById("mirror-status");
+  if (!box) return;
+  try {
+    const status = await api("/api/mirror/status");
+    box.innerHTML = status.running
+      ? `Раздача работает, адрес <code>${escapeHtml(status.baseUrl)}</code>.
+         <button class="secondary" id="mirror-stop-btn" style="margin-left:8px">Остановить</button>`
+      : `Раздача не запущена — она поднимется сама при первом запуске задания с доступом к сети.
+         <button class="secondary" id="mirror-start-btn" style="margin-left:8px">Запустить сейчас</button>`;
+    const start = document.getElementById("mirror-start-btn");
+    const stop = document.getElementById("mirror-stop-btn");
+    if (start) start.onclick = () => mirrorPower("start");
+    if (stop) stop.onclick = () => mirrorPower("stop");
+  } catch (err) {
+    box.textContent = "Не удалось опросить раздачу: " + err.message;
+  }
+}
+
+async function mirrorPower(action) {
+  const box = document.getElementById("mirror-status");
+  if (box) box.textContent = action === "start" ? "Запускаем…" : "Останавливаем…";
+  try {
+    await api(`/api/mirror/${action}`, { method: "POST" });
+  } catch (err) {
+    mirrorMessage("Не получилось: " + err.message, "error");
+  }
+  refreshMirrorStatus();
+}
+
+function renderMirrorList() {
+  const box = document.getElementById("mirror-list");
+  if (!box) return;
+  if (mirrorFiles.length === 0) {
+    box.innerHTML = '<p class="muted">Пока ничего не раздаётся.</p>';
+    return;
+  }
+  box.innerHTML = `
+    <table>
+      <thead><tr><th>Файл</th><th>Ссылка для программы</th><th>Размер</th><th></th></tr></thead>
+      <tbody>
+        ${mirrorFiles
+          .map(
+            (file) => `<tr>
+              <td>${escapeHtml(file.filename)}</td>
+              <td><code>${escapeHtml(file.url)}</code></td>
+              <td>${Math.max(1, Math.round(file.size / 1024))} КБ</td>
+              <td><button class="delete-file" data-file="${escapeHtml(
+                file.filename
+              )}" title="Убрать из раздачи">×</button></td>
+            </tr>`
+          )
+          .join("")}
+      </tbody>
+    </table>`;
+  box.querySelectorAll(".delete-file").forEach((button) => {
+    button.onclick = () => deleteMirrorFile(button.dataset.file);
+  });
+}
+
+async function uploadMirrorFiles() {
+  const input = document.getElementById("mirror-files");
+  const chosen = Array.from((input && input.files) || []);
+  if (chosen.length === 0) return mirrorMessage("Выберите файлы.", "error");
+
+  const button = document.getElementById("mirror-upload-btn");
+  button.disabled = true;
+  try {
+    const files = await Promise.all(
+      chosen.map(
+        (file) =>
+          new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve({ name: file.name, data: reader.result });
+            reader.onerror = () => reject(new Error(`Не удалось прочитать «${file.name}»`));
+            reader.readAsDataURL(file);
+          })
+      )
+    );
+    const result = await api("/api/mirror", {
+      method: "POST",
+      body: JSON.stringify({ files }),
+    });
+    mirrorFiles = result.all || [];
+    input.value = "";
+    renderMirrorList();
+    loadMirrorManage();
+    mirrorMessage(`Файлов в раздаче: ${mirrorFiles.length}.`, "success");
+  } catch (err) {
+    mirrorMessage("Не удалось загрузить: " + err.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function deleteMirrorFile(filename) {
+  if (!confirm(`Убрать «${filename}» из раздачи?`)) return;
+  try {
+    const result = await api(`/api/mirror/${encodeURIComponent(filename)}`, {
+      method: "DELETE",
+    });
+    mirrorFiles = result.files || [];
+    renderMirrorList();
+    loadMirrorManage();
+  } catch (err) {
+    mirrorMessage("Не удалось убрать: " + err.message, "error");
+  }
+}
+
 document.getElementById("new-notification-btn").onclick = () =>
   renderNotificationForm(null);
+
+document.getElementById("mirror-open-btn").onclick = () => renderMirrorPanel();
 
 (async function init() {
   initEditor();
@@ -2272,5 +2510,6 @@ document.getElementById("new-notification-btn").onclick = () =>
   await loadAssignments();
   await loadStudentManage();
   await loadNotificationManage();
+  await loadMirrorManage();
   await loadNotifications();
 })();

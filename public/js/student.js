@@ -158,7 +158,8 @@ function renderWorkCard() {
                <div class="editor-wrap" id="editor-container"></div>
                <div class="binary-note" id="binary-note" hidden></div>
              </div>
-             <div id="entry-hint" class="muted"></div>`
+             <div id="entry-hint" class="muted"></div>
+             <div id="network-hint" style="font-size:12px; margin-top:4px"></div>`
       }
       <div id="readonly-banner"></div>
       <div class="toolbar">
@@ -1070,6 +1071,34 @@ function renderFileTree() {
       ? `▶ «Запустить» компилирует все файлы .java и стартует с ${entry}. Файлы данных лежат рядом с программой: new File("${example}") — это относительный путь.`
       : "▶ Добавьте файл .java, чтобы проект можно было запустить";
   }
+
+  renderNetworkHint();
+}
+
+// Assignments with network access can download from the platform's own file
+// server; nothing else is reachable from a run, so the addresses are worth
+// showing right next to the editor.
+async function renderNetworkHint() {
+  const box = document.getElementById("network-hint");
+  if (!box) return;
+  if (!activeAssignment || !activeAssignment.network_access) {
+    box.innerHTML = "";
+    return;
+  }
+  try {
+    const data = await api("/api/mirror");
+    const files = data.files || [];
+    box.innerHTML =
+      files.length === 0
+        ? `<span class="muted">Сеть в этом задании открыта на <code>${escapeHtml(
+            data.baseUrl
+          )}</code>, но файлов там пока нет.</span>`
+        : `<span class="muted">Программе доступны по сети:</span> ${files
+            .map((f) => `<code>${escapeHtml(f.url)}</code>`)
+            .join(", ")}`;
+  } catch {
+    box.innerHTML = "";
+  }
 }
 
 // Shows a file in the editor. Opening a .java file also makes it the entry
@@ -1633,7 +1662,13 @@ async function runCode() {
       method: "POST",
       // Every .java file is compiled; the entry one holds main(). Data files
       // travel with it and become the program's working directory.
-      body: JSON.stringify({ files: projectFiles, entry }),
+      // assignmentId lets the server decide whether this run may reach the
+      // file mirror - the permission lives on the assignment, not here.
+      body: JSON.stringify({
+        files: projectFiles,
+        entry,
+        assignmentId: activeAssignment ? activeAssignment.id : null,
+      }),
     });
   } catch (err) {
     setConsoleRunning(false);

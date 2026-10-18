@@ -321,10 +321,14 @@ for (const table of ["submission_files", "assignment_starter_files"]) {
 //                       "as soon as it exists" (assignments.deadline is the
 //                       other end of the window)
 //   time_limit_minutes  how long one attempt may last once started
+//
+// network_access: 1 when a run of this assignment may reach the file mirror
+// (see mirror.js). Off by default - the sandbox has no network at all.
 for (const [col, type] of [
   ["test_kind", "TEXT"],
   ["available_from", "TEXT"],
   ["time_limit_minutes", "INTEGER"],
+  ["network_access", "INTEGER NOT NULL DEFAULT 0"],
 ]) {
   if (!columnNames("assignments").includes(col)) {
     db.exec(`ALTER TABLE assignments ADD COLUMN ${col} ${type}`);
