@@ -53,6 +53,18 @@ function readProject(body) {
   throw new SandboxError("Нечего запускать: нет кода");
 }
 
+// Whether a run of this assignment may reach the file mirror. The flag lives
+// on the assignment, so a student cannot ask for network access by sending a
+// different request - they can only name the assignment they are working on.
+function mirrorAllowed(assignmentId) {
+  const id = parseInt(assignmentId, 10);
+  if (Number.isNaN(id)) return false;
+  const row = db
+    .prepare("SELECT network_access FROM assignments WHERE id = ?")
+    .get(id);
+  return !!(row && row.network_access);
+}
+
 function filesForSubmission(submissionId) {
   return db
     .prepare(
@@ -120,7 +132,9 @@ router.post("/interactive", requireLogin, requireRole("student"), async (req, re
   }
 
   try {
-    const started = await startInteractiveRun(project.files, project.entry);
+    const started = await startInteractiveRun(project.files, project.entry, {
+      mirror: mirrorAllowed(req.body.assignmentId),
+    });
     if (!started.ok) return res.json({ compileFailed: true, result: started.result });
 
     const { session } = started;
@@ -263,7 +277,9 @@ router.post(
     }
 
     try {
-      const result = await runJavaProject(project.files, project.entry, req.body.stdin || "");
+      const result = await runJavaProject(project.files, project.entry, req.body.stdin || "", {
+        mirror: mirrorAllowed(req.body.assignmentId),
+      });
       res.json(result);
     } catch (err) {
       if (err instanceof SandboxError) return res.status(400).json({ error: err.message });
@@ -364,7 +380,9 @@ router.post(
 
     if (shouldRun) {
       try {
-        runResult = await runJavaProject(project.files, project.entry, stdin);
+        runResult = await runJavaProject(project.files, project.entry, stdin, {
+          mirror: mirrorAllowed(assignmentId),
+        });
       } catch (err) {
         if (err instanceof SandboxError) return res.status(400).json({ error: err.message });
         if (err instanceof QueueFullError) return res.status(503).json({ error: err.message });

@@ -6,6 +6,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { Limiter, QueueFullError } = require("./queue");
 const projectFiles = require("./projectFiles");
+const mirror = require("./mirror");
 
 // ---------------------------------------------------------------------
 // Configuration
@@ -329,12 +330,28 @@ function compileFailure(compileResult) {
   return null;
 }
 
-async function runJavaProject(files, entryFilename, stdin = "") {
+// Which Docker network a run joins. By default none at all; an assignment
+// that is allowed the file mirror joins the mirror's internal network, which
+// is brought up on demand (see mirror.js).
+async function resolveNetwork(options = {}) {
+  if (!options.mirror) return "none";
+  try {
+    await mirror.ensureUp();
+  } catch (err) {
+    throw new SandboxError(
+      `Файловое зеркало недоступно, запуск с доступом к файлам невозможен: ${err.message}`
+    );
+  }
+  return mirror.NETWORK;
+}
+
+async function runJavaProject(files, entryFilename, stdin = "", options = {}) {
   const entry = validateProject(files, entryFilename);
+  const network = await resolveNetwork(options);
 
   // Validation above is free; everything below starts containers, so it waits
   // for a slot. Callers see nothing but a slower response.
-  return limiter.run(() => runProjectInSlot(files, entry, stdin));
+  return limiter.run(() => runProjectInSlot(files, entry, stdin, network));
 }
 
 // Writes the project into a pair of temp directories the containers mount.
@@ -487,7 +504,7 @@ function buildRunArgs(
   entry,
   containerName,
   timeLimitSeconds,
-  { pty = false } = {}
+  { pty = false, network = "none" } = {}
 ) {
   const javaCommand = [
     "java",
@@ -509,7 +526,9 @@ function buildRunArgs(
     "--rm",
     "-i",
     `--name=${containerName}`,
-    "--network=none",
+    // "none" unless the assignment allows the file mirror, in which case the
+    // run joins an internal network whose only host is that mirror.
+    `--network=${network}`,
     `--memory=${MEMORY_LIMIT}`,
     `--memory-swap=${MEMORY_LIMIT}`,
     `--cpus=${CPUS}`,
@@ -534,7 +553,7 @@ function buildRunArgs(
   ];
 }
 
-async function runProjectInSlot(files, entry, stdin) {
+async function runProjectInSlot(files, entry, stdin, network = "none") {
   const { codeDir, outDir, workDir } = prepareProjectDirs(files);
 
   try {
@@ -549,7 +568,9 @@ async function runProjectInSlot(files, entry, stdin) {
 
     // ---- Step 2: run ----
     const runName = `jc-run-${crypto.randomBytes(8).toString("hex")}`;
-    const runArgs = buildRunArgs(outDir, workDir, entry, runName, TIME_LIMIT_SECONDS);
+    const runArgs = buildRunArgs(outDir, workDir, entry, runName, TIME_LIMIT_SECONDS, {
+      network,
+    });
 
     const runResult = await runDocker(runArgs, stdin, runName);
 
@@ -701,8 +722,9 @@ class InteractiveSession extends EventEmitter {
 // Compiles the project, then starts it with stdin left open.
 // Resolves with { ok: false, result } when compilation fails, so the caller
 // can show the same errors as a batch run, or { ok: true, session }.
-async function startInteractiveRun(files, entryFilename) {
+async function startInteractiveRun(files, entryFilename, options = {}) {
   const entry = validateProject(files, entryFilename);
+  const network = await resolveNetwork(options);
 
   // Compilation is a short CPU burst - it belongs in the regular pool.
   const { codeDir, outDir, workDir } = prepareProjectDirs(files);
@@ -738,7 +760,7 @@ async function startInteractiveRun(files, entryFilename) {
     entry,
     session.containerName,
     INTERACTIVE_MAX_SECONDS,
-    { pty: true }
+    { pty: true, network }
   );
   const child = spawn("docker", args, { stdio: ["pipe", "pipe", "pipe"] });
   session.child = child;

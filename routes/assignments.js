@@ -314,6 +314,13 @@ function normalizeMaxScore(raw) {
   return value;
 }
 
+// Network access is only meaningful where there is a program to run: the
+// mirror exists so Java code can download from it.
+function readNetworkAccess(raw, assignmentType) {
+  if (assignmentType !== "code") return 0;
+  return raw === true || raw === 1 || raw === "1" || raw === "true" ? 1 : 0;
+}
+
 // Per-group exceptions from the form: [{ groupName, deadline, maxScore }].
 // A row that overrides nothing is dropped rather than stored as a no-op, so
 // clearing both fields in the form removes the exception.
@@ -410,12 +417,14 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
   let assignmentType;
   let maxScore;
   let groupRules;
+  let networkAccess = 0;
   let starter = null;
   let test = null;
   try {
     assignmentType = normalizeType(req.body.type);
     maxScore = normalizeMaxScore(req.body.maxScore);
     groupRules = readGroupRules(req.body);
+    networkAccess = readNetworkAccess(req.body.networkAccess, assignmentType);
     // Only code assignments carry a Java starter project. A text assignment's
     // starter is the text the student begins from; free-form has none.
     if (assignmentType === "code") starter = readStarterProject(req.body);
@@ -457,8 +466,8 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
         .prepare(
           `INSERT INTO assignments
              (title, description, starter_code, created_by, deadline, type, max_score,
-              test_kind, available_from, time_limit_minutes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              test_kind, available_from, time_limit_minutes, network_access)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         // starter_code mirrors the entry file for the older single-file paths.
         .run(
@@ -471,7 +480,8 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
           maxScore,
           test ? test.testKind : null,
           test ? test.availableFrom : null,
-          test ? test.timeLimitMinutes : null
+          test ? test.timeLimitMinutes : null,
+          networkAccess
         );
 
       rules.replaceRules(info.lastInsertRowid, groupRules);
@@ -544,6 +554,7 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
   let assignmentType;
   let maxScore;
   let groupRules;
+  let networkAccess = 0;
   let test = null;
   try {
     dueAt = normalizeDeadline(deadline);
@@ -558,6 +569,13 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
       req.body.groupRules === undefined
         ? rules.rulesForAssignment(assignment.id)
         : readGroupRules(req.body);
+    // Omitted in the request means "leave it as it is".
+    networkAccess = readNetworkAccess(
+      req.body.networkAccess === undefined
+        ? !!assignment.network_access
+        : req.body.networkAccess,
+      assignmentType
+    );
     if (assignmentType === "code") starter = readStarterProject(req.body);
     if (assignmentType === "test") test = readTestSpec(req.body);
   } catch (err) {
@@ -653,7 +671,8 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
       db.prepare(
         `UPDATE assignments
          SET title = ?, description = ?, starter_code = ?, deadline = ?, type = ?,
-             max_score = ?, test_kind = ?, available_from = ?, time_limit_minutes = ?
+             max_score = ?, test_kind = ?, available_from = ?, time_limit_minutes = ?,
+             network_access = ?
          WHERE id = ?`
       ).run(
         newTitle,
@@ -665,6 +684,7 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
         test ? test.testKind : null,
         test ? test.availableFrom : null,
         test ? test.timeLimitMinutes : null,
+        networkAccess,
         assignment.id
       );
 

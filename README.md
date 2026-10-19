@@ -143,6 +143,11 @@ database gets corrupted.
    say how long it stays up. Every student sees it as a banner above the
    working area until then; expired ones stay in your list so you can see
    what was announced.
+7. **Network files** in the sidebar: upload the text files a program should
+   be able to download, and hand out the URLs it prints next to each one
+   (`http://files.local/<name>`). Then tick **Разрешить скачивание файлов
+   по сети** on the assignment itself — that switch, and nothing else, is
+   what gives a run any network at all. See *The file mirror* below.
 
 ### As a student
 
@@ -175,6 +180,43 @@ database gets corrupted.
    loaded in your editor gets linked to your next message automatically,
    so your teacher can jump straight to the code you're asking about.
 
+## The file mirror (network labs)
+
+Runs have no network: `--network=none`. That makes a lab like "download a
+text file by its URL" impossible, so the platform serves the files itself.
+
+- The teacher uploads text files under **Файлы по сети**. They keep their own
+  names, because the name in the URL is the point of such a lab. Same policy
+  as a project's data file: text formats only (`projectFiles.DATA_EXTENSIONS`),
+  or no extension at all.
+- An assignment with `network_access` on joins `jc-mirror-net` instead of
+  getting no network. That network is created with `--internal`, and the only
+  host on it is the mirror container, reachable as `files.local`.
+- The mirror is `jwebserver` from the JDK image already in use - no extra
+  image, and it only ever answers GET and HEAD, from a read-only mount. It
+  starts on demand, on the first run that needs it (`mirror.ensureUp`), and
+  the teacher's panel can start and stop it by hand.
+
+What a run on that network can reach, measured from inside the sandbox:
+
+| target | result |
+| --- | --- |
+| `http://files.local/<file>` | served |
+| `https://example.com/` | `UnknownHostException` |
+| `http://1.1.1.1/` | `SocketException: Network is unreachable` |
+| the host, incl. this platform's own port | unreachable |
+| a container on the default bridge (reachable from a normal container) | unreachable |
+
+What it *can* reach is the other containers on the same network: two runs
+happening in the same moment can see each other's ports. That is why network
+access is per-assignment and off by default - switch it on for the lab that
+needs it, not for the course.
+
+Environment variables (all optional): `MIRROR_DIR` (default `./mirror`),
+`MIRROR_NETWORK`, `MIRROR_CONTAINER`, `MIRROR_HOSTNAME` (default
+`files.local`), `MIRROR_PORT` (default 80), `MIRROR_IMAGE`,
+`MIRROR_MAX_FILES`, `MIRROR_MAX_FILE_BYTES`.
+
 ## Known limitations / things to improve next
 
 - **No automated test cases** — by design, per your requirements. Grading
@@ -189,6 +231,11 @@ database gets corrupted.
   data files, 256 KB each and 1 MB in total (`projectFiles.js`). A
   program that writes more than that has its extra files dropped, with a
   note in the console. Fine for labs about streams; not a file store.
+- **Runs that share the mirror network can see each other** - Docker has no
+  per-container "no peers" switch on a shared bridge, and a network per run
+  would mean creating and removing one on every press of Run. Only
+  assignments with network access are affected; the rest still get
+  `--network=none`.
 - **Student accounts are teacher-created only** — no self-signup, no
   password reset flow. For a small class this is usually fine; you might
   want to add a "reset password" feature if it becomes a pain.
@@ -216,6 +263,7 @@ database gets corrupted.
 java-classroom/
 ├── server.js              # Express app entry point
 ├── sandbox.js               # Docker-based code execution sandbox
+├── mirror.js                # The file server a networked run can download from
 ├── db/database.js          # SQLite connection + schema
 ├── middleware/auth.js      # Login/role-check middleware
 ├── routes/
@@ -224,6 +272,7 @@ java-classroom/
 │   ├── submissions.js       # Run code, save versions
 │   ├── discussions.js       # Discussion threads + messages
 │   ├── notifications.js     # Class-wide announcements
+│   ├── mirror.js            # Files served to the sandbox over HTTP
 │   ├── tests.js             # Sitting a test, reading the result
 │   └── grades.js            # Grading
 ├── public/

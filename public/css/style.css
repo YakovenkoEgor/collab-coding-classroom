@@ -404,10 +404,25 @@ h3 { font-size: 14px; margin: 0 0 10px 0; color: var(--text-dim); text-transform
 .binary-note strong { color: var(--text); font-family: var(--font-mono); }
 .editor-layout.resizable .binary-note { height: 100%; }
 
+/* A checkbox with its caption on one line, next to the box itself. */
+.checkbox-label {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.checkbox-label input[type=checkbox] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
 /* --- Per-group deadlines and maximum scores --- */
 .group-rules { margin-top: 6px; }
 .group-rules th, .group-rules td { padding: 6px 8px; }
 .group-rules td:first-child { font-weight: 600; }
+.group-rules .group-rules-default td { border-bottom: 1px solid var(--border); }
 .group-rules input { width: 100%; }
 .group-rules input[type=number] { max-width: 110px; }
 
@@ -775,16 +790,26 @@ button.secondary.danger:hover { border-color: var(--error); color: var(--error);
 .test-settings {
   display: flex;
   flex-wrap: wrap;
+  /* Controls on one level even when a caption above them wraps. */
+  align-items: flex-end;
   gap: 12px;
   margin: 6px 0 8px;
 }
+/* Caption above its control. The selector carries `.form-row` so it outweighs
+   `.form-row label { display: block }`, which otherwise leaves a caption
+   sitting beside a control that is not full-width - a select, say. */
+.form-row .inline-label,
 .inline-label {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 4px;
+  margin-bottom: 0;
   font-size: 12px;
   color: var(--text-dim);
 }
+.inline-label > select,
+.inline-label > input { align-self: stretch; }
 
 .test-question {
   border: 1px solid var(--border);
@@ -793,15 +818,23 @@ button.secondary.danger:hover { border-color: var(--error); color: var(--error);
   margin: 8px 0;
   background: var(--bg-panel-raised);
 }
-.test-question textarea,
 .test-question .tq-expected { width: 100%; }
+/* Both free-text fields are sized by script, so no grip and no scrollbar. */
+.test-question .tq-body,
+.test-question .tq-expected {
+  resize: none;
+  overflow: hidden;
+  line-height: 1.4;
+}
 .tq-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   margin-bottom: 6px;
 }
-.tq-head select { flex: 1 1 auto; min-width: 0; }
+/* The wording takes the room; the kind keeps a readable, fixed width. */
+.tq-head .tq-body { flex: 1 1 auto; min-width: 0; width: auto; }
+.tq-head select { flex: 0 0 220px; min-width: 0; }
 .tq-number {
   flex: 0 0 auto;
   width: 22px;
@@ -816,8 +849,22 @@ button.secondary.danger:hover { border-color: var(--error); color: var(--error);
   justify-content: center;
 }
 .tq-options { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
-.tq-option { display: flex; align-items: center; gap: 8px; }
-.tq-option-body { flex: 1 1 auto; min-width: 0; }
+/* Mark, then the wording, both hugging the left edge - the mark would stretch
+   to half the row without a width of its own, .form-row making inputs full. */
+.tq-option {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+.tq-option .tq-correct {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+.tq-option-body { flex: 0 1 420px; min-width: 0; }
+.tq-option .tq-remove-option { flex: 0 0 auto; }
 .tq-add-option { align-self: flex-start; }
 
 /* --- Test assignments: the student's view --- */

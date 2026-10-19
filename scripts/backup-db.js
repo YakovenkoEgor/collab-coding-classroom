@@ -8,6 +8,7 @@
 //   classroom.db   the database, snapshotted with VACUUM INTO
 //   tables/*.json  one file per table, readable without SQLite
 //   uploads/       handouts and student attachments
+//   mirror/        the text files the sandbox can download
 //   summary.json   row counts, file counts, and when it was taken
 //
 // Two things matter about how the snapshot is taken.
@@ -32,6 +33,7 @@ const Database = require("better-sqlite3");
 const ROOT = path.join(__dirname, "..");
 const BACKUP_ROOT = path.join(ROOT, "backups");
 const UPLOAD_DIR = path.join(ROOT, "uploads");
+const MIRROR_DIR = process.env.MIRROR_DIR || path.join(ROOT, "mirror");
 const DEFAULT_KEEP = 10;
 const ARCHIVE_PREFIX = "classroom-";
 
@@ -145,11 +147,20 @@ function backup({ keep = DEFAULT_KEEP, archive = true } = {}) {
     fs.cpSync(UPLOAD_DIR, path.join(dir, "uploads"), { recursive: true });
   }
 
+  // ---- 3b. the files served to the sandbox ----
+  // Nothing in the database points at these, but an assignment that tells the
+  // student to download a particular file is broken without them.
+  const mirrorFiles = measureTree(MIRROR_DIR);
+  if (mirrorFiles.files > 0) {
+    fs.cpSync(MIRROR_DIR, path.join(dir, "mirror"), { recursive: true });
+  }
+
   const summary = {
     takenAt: new Date().toISOString(),
     database: dbPath,
     rowCounts,
     uploads,
+    mirror: mirrorFiles,
   };
   fs.writeFileSync(
     path.join(dir, "summary.json"),
@@ -163,6 +174,9 @@ function backup({ keep = DEFAULT_KEEP, archive = true } = {}) {
   }
   console.log(
     `uploaded files: ${uploads.files} (${formatSize(uploads.bytes)})`
+  );
+  console.log(
+    `mirror files:   ${mirrorFiles.files} (${formatSize(mirrorFiles.bytes)})`
   );
 
   // ---- 4. pack it ----
