@@ -2,6 +2,7 @@ const express = require("express");
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const db = require("../db/database");
+const progsnap = require("../progsnap");
 const { requireLogin, requireRole } = require("../middleware/auth");
 const { parseCsv, toCsv } = require("../csv");
 const { withDeadlineState } = require("../deadlines");
@@ -119,10 +120,32 @@ router.post("/login", (req, res) => {
     role: user.role,
   };
 
+  // Process data: a work session starts here. Only students are logged -
+  // the dataset is about how students work, and the teacher's own clicking
+  // around is not part of it.
+  if (user.role === "student") {
+    progsnap.logEvent({
+      eventType: progsnap.EventType.SESSION_START,
+      subjectId: user.id,
+      sessionId: req.sessionID,
+    });
+  }
+
   res.json({ user: req.session.user });
 });
 
 router.post("/logout", (req, res) => {
+  // Logged before the session is destroyed - afterwards there is no id left
+  // to attach the event to. A session that simply expires leaves no
+  // Session.End, which the exported README spells out.
+  const user = req.session.user;
+  if (user && user.role === "student") {
+    progsnap.logEvent({
+      eventType: progsnap.EventType.SESSION_END,
+      subjectId: user.id,
+      sessionId: req.sessionID,
+    });
+  }
   req.session.destroy(() => res.json({ ok: true }));
 });
 

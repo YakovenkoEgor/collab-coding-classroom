@@ -3,6 +3,7 @@ const db = require("../db/database");
 const { requireLogin, requireRole } = require("../middleware/auth");
 const { toCsv } = require("../csv");
 const rules = require("../assignmentRules");
+const progsnap = require("../progsnap");
 
 const router = express.Router();
 
@@ -143,6 +144,20 @@ router.put(
         "SELECT * FROM grades WHERE assignment_id = ? AND student_id = ?"
       )
       .get(req.params.assignmentId, studentId);
+
+    // Process data: the mark, normalised to 0..1 the way ProgSnap2 wants it,
+    // against the maximum that applied to this student's group. The initiator
+    // is the teacher, not the student whose work it is.
+    progsnap.logEvent({
+      eventType: progsnap.EventType.X_GRADE,
+      subjectId: studentId,
+      sessionId: req.sessionID,
+      assignmentId: req.params.assignmentId,
+      eventInitiator: "InstructorDirectAction",
+      score: progsnap.normalizeScore(normalized.value, maxScore),
+      extra: { "X-RawScore": normalized.value, "X-MaxScore": maxScore },
+    });
+
     res.json({ grade });
   }
 );

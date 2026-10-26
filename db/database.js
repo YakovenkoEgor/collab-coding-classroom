@@ -1,4 +1,5 @@
 const path = require("path");
+const crypto = require("crypto");
 const Database = require("better-sqlite3");
 
 // DB_PATH lets you point at a throwaway copy (handy for trying a migration
@@ -202,6 +203,61 @@ CREATE TABLE IF NOT EXISTS test_answers (
   PRIMARY KEY (attempt_id, question_id)
 );
 
+-- Process data in the ProgSnap2 sense: an append-only log of what happened
+-- while a student worked, so the course can be analysed afterwards (and the
+-- data shared in a standard format - see progsnap.js and
+-- scripts/export-progsnap2.js). Column names follow the specification so the
+-- export is a straight copy rather than a translation.
+--
+-- Nothing here is ever updated or deleted by the app: a row is a statement
+-- that something happened at a moment in time.
+CREATE TABLE IF NOT EXISTS events (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,  -- EventID
+  event_type           TEXT NOT NULL,                      -- EventType
+  subject_id           INTEGER REFERENCES users(id),       -- resolved to a surrogate key on export
+  session_id           TEXT,                               -- SessionID
+  assignment_id        INTEGER REFERENCES assignments(id), -- AssignmentID
+  submission_id        INTEGER,                            -- which version, when there is one
+  code_state_id        TEXT,                               -- CodeStateID (content hash)
+  code_state_section   TEXT,                               -- CodeStateSection: the file a File.* event is about
+  server_timestamp     TEXT NOT NULL DEFAULT (datetime('now')),
+  client_timestamp     TEXT,                               -- ClientTimestamp, for events the browser reports
+  event_initiator      TEXT,                               -- EventInitiator
+  edit_type            TEXT,                               -- EditType
+  compile_result       TEXT,                               -- CompileResult
+  compile_message_type TEXT,                               -- CompileMessageType
+  compile_message_data TEXT,                               -- CompileMessageData
+  execution_id         TEXT,                               -- ExecutionID
+  execution_result     TEXT,                               -- ExecutionResult
+  program_input        TEXT,                               -- ProgramInput
+  program_output       TEXT,                               -- ProgramOutput
+  program_error_output TEXT,                               -- ProgramErrorOutput
+  score                REAL,                               -- Score, normalised 0..1
+  attempt              INTEGER,                            -- Attempt
+  parent_event_id      INTEGER REFERENCES events(id),      -- ParentEventID
+  resource_id          TEXT,                               -- ResourceID
+  extra                TEXT                                -- JSON for dataset-specific X- columns
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_subject ON events(subject_id, id);
+CREATE INDEX IF NOT EXISTS idx_events_assignment ON events(assignment_id, id);
+
+-- Snapshots the events point at, stored once per distinct content: a student
+-- pressing Run twice without editing anything produces one code state, not two.
+CREATE TABLE IF NOT EXISTS event_code_states (
+  code_state_id TEXT PRIMARY KEY,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS event_code_state_files (
+  code_state_id TEXT NOT NULL REFERENCES event_code_states(code_state_id) ON DELETE CASCADE,
+  filename      TEXT NOT NULL,
+  content       TEXT NOT NULL,
+  encoding      TEXT NOT NULL DEFAULT 'text',
+  is_entry      INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (code_state_id, filename)
+);
+
 CREATE TABLE IF NOT EXISTS grades (
   assignment_id INTEGER NOT NULL REFERENCES assignments(id),
   student_id    INTEGER NOT NULL REFERENCES users(id),
@@ -263,6 +319,54 @@ if (addedUserColumns.length > 0) {
   console.log(
     `[db] migrated users table: added ${addedUserColumns.join(", ")}`
   );
+}
+
+// A surrogate key for every student, used as SubjectID in exported process
+// data. It is random, carries no personal data, and is deliberately not
+// derived from the login, the name or the database id - so an exported
+// dataset cannot be traced back to a person without this table, which is
+// never part of an export.
+if (!columnNames("users").includes("subject_key")) {
+  db.exec("ALTER TABLE users ADD COLUMN subject_key TEXT");
+  console.log("[db] migrated users table: added subject_key");
+}
+
+// Unique rather than merely random: a collision would silently merge two
+// students' work in an analysis.
+db.exec(
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_subject_key ON users(subject_key)"
+);
+
+// A trigger rather than a column default, so every way of creating a user -
+// the bootstrap teacher, the add-student form, the CSV import, a future one -
+// gets a key without having to remember to ask for one.
+db.exec(`
+  CREATE TRIGGER IF NOT EXISTS users_subject_key_after_insert
+  AFTER INSERT ON users
+  WHEN NEW.subject_key IS NULL OR NEW.subject_key = ''
+  BEGIN
+    UPDATE users SET subject_key = lower(hex(randomblob(10))) WHERE id = NEW.id;
+  END;
+`);
+
+function newSubjectKey() {
+  // 16 bytes of base32-ish text: short enough to read in a CSV, wide enough
+  // that keys never collide, and safe as a directory name.
+  return crypto.randomBytes(10).toString("hex");
+}
+
+{
+  const missing = db
+    .prepare("SELECT id FROM users WHERE subject_key IS NULL OR subject_key = ''")
+    .all();
+  if (missing.length > 0) {
+    const assign = db.prepare("UPDATE users SET subject_key = ? WHERE id = ?");
+    const fill = db.transaction((rows) => {
+      for (const row of rows) assign.run(newSubjectKey(), row.id);
+    });
+    fill(missing);
+    console.log(`[db] assigned a subject key to ${missing.length} user(s)`);
+  }
 }
 
 // Submissions predating multi-file projects have their source only in
@@ -381,5 +485,7 @@ if (legacyStarters.length > 0) {
     `[db] migrated ${legacyStarters.length} assignment starter(s) to Main.java`
   );
 }
+
+db.newSubjectKey = newSubjectKey;
 
 module.exports = db;

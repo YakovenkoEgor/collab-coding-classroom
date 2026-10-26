@@ -25,6 +25,9 @@ uploads/
 # --- Files served to the sandbox (teacher's data files, not source code) ---
 mirror/
 
+# --- ProgSnap2 exports (npm run export:progsnap) - student process data ---
+exports/
+
 # --- Database backups (npm run backup) - real student data, never commit ---
 backups/
 
