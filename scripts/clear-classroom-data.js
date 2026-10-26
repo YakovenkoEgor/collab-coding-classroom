@@ -50,6 +50,8 @@ const counts = {
   notifications: db.prepare("SELECT COUNT(*) c FROM notifications").get().c,
   test_questions: db.prepare("SELECT COUNT(*) c FROM test_questions").get().c,
   test_attempts: db.prepare("SELECT COUNT(*) c FROM test_attempts").get().c,
+  events: db.prepare("SELECT COUNT(*) c FROM events").get().c,
+  event_code_states: db.prepare("SELECT COUNT(*) c FROM event_code_states").get().c,
 };
 
 const teachers = db.prepare("SELECT COUNT(*) c FROM users WHERE role = 'teacher'").get().c;
@@ -92,6 +94,12 @@ const wipe = db.transaction(() => {
   db.prepare("DELETE FROM test_attempts").run();
   db.prepare("DELETE FROM test_options").run();
   db.prepare("DELETE FROM test_questions").run();
+  // The process log points at both students and assignments, so it goes
+  // before either. Export it first if it is worth keeping -
+  // scripts/export-progsnap2.js.
+  db.prepare("DELETE FROM events").run();
+  db.prepare("DELETE FROM event_code_state_files").run();
+  db.prepare("DELETE FROM event_code_states").run();
   db.prepare("DELETE FROM assignments").run();
   // notifications.created_by points at the teacher who wrote them, so these
   // have to go before any account does.
@@ -139,6 +147,9 @@ for (const table of [
   "test_options",
   "test_attempts",
   "test_answers",
+  "events",
+  "event_code_states",
+  "event_code_state_files",
 ]) {
   console.log(
     `  ${table.padEnd(26)} ${db.prepare(`SELECT COUNT(*) c FROM ${table}`).get().c}`

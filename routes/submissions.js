@@ -8,6 +8,7 @@ const {
   QueueFullError,
 } = require("../sandbox");
 const projectFiles = require("../projectFiles");
+const progsnap = require("../progsnap");
 
 const router = express.Router();
 
@@ -135,18 +136,70 @@ router.post("/interactive", requireLogin, requireRole("student"), async (req, re
     const started = await startInteractiveRun(project.files, project.entry, {
       mirror: mirrorAllowed(req.body.assignmentId),
     });
-    if (!started.ok) return res.json({ compileFailed: true, result: started.result });
+    if (!started.ok) {
+      // Never started: that is a Compile event with an error, same as a
+      // batch run that failed to compile.
+      progsnap.logRun({
+        subjectId: req.session.user.id,
+        sessionId: req.sessionID,
+        assignmentId: req.body.assignmentId || null,
+        files: project.files,
+        entry: project.entry,
+        stdin: "",
+        result: started.result,
+        interactive: true,
+      });
+      return res.json({ compileFailed: true, result: started.result });
+    }
 
     const { session } = started;
     // Output that arrives before the browser opens the stream is kept here.
-    const entry = { session, ownerId: req.session.user.id, buffer: [] };
+    // `typed` and `output` are only for the process log: what the student
+    // typed and what came back, to be written as one Run.Program event when
+    // the program ends.
+    const entry = {
+      session,
+      ownerId: req.session.user.id,
+      buffer: [],
+      typed: [],
+      output: [],
+      log: {
+        subjectId: req.session.user.id,
+        sessionId: req.sessionID,
+        assignmentId: req.body.assignmentId || null,
+        files: project.files,
+        entry: project.entry,
+      },
+    };
     liveSessions.set(session.id, entry);
 
-    session.on("output", (text) => entry.buffer.push({ type: "output", text }));
+    session.on("output", (text) => {
+      entry.buffer.push({ type: "output", text });
+      entry.output.push(text);
+    });
     // The exit event carries the data files as the program left them, so the
     // editor can take back anything it wrote (see sandbox.readWorkDir).
     session.on("exit", ({ reason, files, warnings }) => {
       entry.buffer.push({ type: "exit", text: reason, files, warnings });
+      // The whole interactive run as one event, now that its input, output
+      // and outcome are all known. "Остановлено" covers both the student
+      // pressing Stop and the session hitting its limit, which ProgSnap2
+      // calls Timeout: execution interrupted by the user or the system.
+      progsnap.logRun({
+        ...entry.log,
+        stdin: entry.typed.join("\n"),
+        result: {
+          status: /Остановлено|Время/.test(reason || "")
+            ? "Time Limit Exceeded"
+            : /заверш/i.test(reason || "")
+              ? "Accepted"
+              : "Runtime Error",
+          stdout: entry.output.join(""),
+          stderr: "",
+          compileOutput: "",
+        },
+        interactive: true,
+      });
       // Give a late-connecting client a moment to read the tail.
       setTimeout(() => liveSessions.delete(session.id), 60_000);
     });
@@ -204,6 +257,8 @@ router.post("/interactive/:sessionId/input", requireLogin, (req, res) => {
   }
   const text = typeof req.body.text === "string" ? req.body.text : "";
   entry.session.write(text);
+  // Kept for the process log, so a Run.Program event can carry ProgramInput.
+  if (Array.isArray(entry.typed)) entry.typed.push(text);
   res.json({ ok: true });
 });
 
@@ -279,6 +334,15 @@ router.post(
     try {
       const result = await runJavaProject(project.files, project.entry, req.body.stdin || "", {
         mirror: mirrorAllowed(req.body.assignmentId),
+      });
+      progsnap.logRun({
+        subjectId: req.session.user.id,
+        sessionId: req.sessionID,
+        assignmentId: req.body.assignmentId || null,
+        files: project.files,
+        entry: project.entry,
+        stdin: req.body.stdin || "",
+        result,
       });
       res.json(result);
     } catch (err) {
@@ -383,6 +447,15 @@ router.post(
         runResult = await runJavaProject(project.files, project.entry, stdin, {
           mirror: mirrorAllowed(assignmentId),
         });
+        progsnap.logRun({
+          subjectId: studentId,
+          sessionId: req.sessionID,
+          assignmentId,
+          files: project.files,
+          entry: project.entry,
+          stdin,
+          result: runResult,
+        });
       } catch (err) {
         if (err instanceof SandboxError) return res.status(400).json({ error: err.message });
         if (err instanceof QueueFullError) return res.status(503).json({ error: err.message });
@@ -435,6 +508,21 @@ router.post(
     const submission = db
       .prepare("SELECT * FROM submissions WHERE id = ?")
       .get(submissionId);
+
+    // The version itself as one event. A submitted version is ProgSnap2's
+    // Submit; a draft is not, so it gets the dataset's own X-Draft.Save.
+    // Running a submitted version has already been logged separately above.
+    progsnap.logVersion({
+      subjectId: studentId,
+      sessionId: req.sessionID,
+      assignmentId,
+      submissionId,
+      versionNumber: nextVersion,
+      files: project.files,
+      entry: project.entry,
+      status: submission.status,
+    });
+
     res.json({ submission, files: filesForSubmission(submissionId) });
   }
 );

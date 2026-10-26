@@ -9,6 +9,7 @@ const {
   DeadlineError,
 } = require("../deadlines");
 const rules = require("../assignmentRules");
+const progsnap = require("../progsnap");
 const projectFiles = require("../projectFiles");
 const testing = require("../testing");
 
@@ -288,6 +289,18 @@ router.get("/:id/files/:fileId/download", requireLogin, (req, res) => {
 
   const fullPath = storage.pathForStoredName(file.stored_name);
   if (!fullPath) return res.status(404).json({ error: "Файл не найден" });
+
+  // Process data: a student opening the handout is ProgSnap2's Resource.View.
+  // The resource is named by its stored name, which carries nothing personal.
+  if (req.session.user.role === "student") {
+    progsnap.logEvent({
+      eventType: progsnap.EventType.RESOURCE_VIEW,
+      subjectId: req.session.user.id,
+      sessionId: req.sessionID,
+      assignmentId: req.params.id,
+      resourceId: file.stored_name,
+    });
+  }
 
   res.download(fullPath, file.original_name, (err) => {
     if (err && !res.headersSent) {
