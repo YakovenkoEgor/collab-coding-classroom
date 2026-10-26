@@ -217,6 +217,108 @@ Environment variables (all optional): `MIRROR_DIR` (default `./mirror`),
 `files.local`), `MIRROR_PORT` (default 80), `MIRROR_IMAGE`,
 `MIRROR_MAX_FILES`, `MIRROR_MAX_FILE_BYTES`.
 
+## Process data (ProgSnap2)
+
+The platform keeps an append-only log of what students did while they worked -
+sessions, edits, compiles, runs, submissions, marks - in the shape
+[ProgSnap2](https://cssplice.org/progsnap2) defines (version 8, Beta). The
+point of using a published format rather than an ad-hoc one is that the data
+can be analysed with tooling other people have already written, and shared
+without a translation step.
+
+### What is logged
+
+| ProgSnap2 event | When |
+| --- | --- |
+| `Session.Start` / `Session.End` | a student logs in / logs out (an expired session leaves no End) |
+| `Compile`, `Compile.Error` | every compile, with the compiler's own message |
+| `Run.Program` | every run: input, output, and `ExecutionResult` |
+| `Submit` | handing work in |
+| `Resource.View` | downloading a handout |
+| `File.Edit` | editing, **only if switched on** - see below |
+| `X-Draft.Save` | saving a draft (not a submission, so not `Submit`) |
+| `X-Grade` | the teacher marking the work; `Score` normalised to 0..1 |
+| `X-Test.Start`, `X-Test.Submit` | sitting a test (answers are not logged) |
+| `X-Sandbox.Error` | the sandbox itself failed - no `Compile`/`Run.Program` is claimed, because nothing of the student's ran |
+
+A run is logged as a `Compile` plus a `Run.Program`, linked by `ParentEventID`
+and a shared `ExecutionID`. Code snapshots are stored once per distinct
+content, so pressing Run twice without an edit costs one snapshot.
+
+**Not logged, deliberately:** discussion threads between a student and the
+teacher, feedback text on a mark, and anything a teacher does other than
+marking. The log is about how students work.
+
+### Edit capture
+
+`File.Edit` is off by default: it is the one event that arrives by the
+thousand. Turning it on makes each student's editor send a snapshot of the
+project at most once per interval - not keystrokes, and only when something
+actually changed.
+
+```bash
+PROGSNAP_EDIT_CAPTURE=on PROGSNAP_EDIT_INTERVAL_SECONDS=120 npm start
+```
+
+The interval is enforced on the server as well as respected by the browser,
+with a floor of 5 seconds.
+
+### Surrogate keys
+
+Every student gets a `subject_key`: random, unique, and not derived from their
+login, name or database id. That is what `SubjectID` holds in an export, so a
+dataset cannot be traced back to a person without the classroom database -
+which is never part of an export. A database trigger assigns the key, so every
+way of creating an account gets one.
+
+### Exporting
+
+```bash
+npm run export:progsnap
+node scripts/export-progsnap2.js --out exports --term "2026 осень" --with-groups
+```
+
+Produces `exports/progsnap2-<timestamp>/` and a `.tar.gz` beside it:
+`MainTable.csv`, `DatasetMetadata.csv`, `README.txt` (what the dataset is, what
+the `X-` columns mean, what to watch out for when analysing it),
+`CodeStates/<id>/` in the Directory format, and `LinkTables/Subject.csv`.
+`--with-groups` adds the study group to the subject table; it is opt-in
+because in a class of twenty a group narrows a person down to a handful.
+Run `npm run validate:progsnap` afterwards - especially before sharing a
+dataset with anyone.
+
+### Checking an export before it goes anywhere
+
+```bash
+npm run validate:progsnap                       # the newest export under ./exports
+node scripts/validate-progsnap2.js <dir> --no-privacy-check
+```
+
+Two things are checked. **Conformance**: the files and columns the spec
+requires, its enumerations (`EventType`, `ExecutionResult`, `CompileResult`,
+`EventInitiator`, `CodeStateRepresentation`), the columns each event type
+requires, unique `EventID`, unique `Order` within the scope the metadata
+declares, `Score` within 0..1, `ParentEventID` pointing at a real event, and a
+directory on disk for every `CodeStateID` referenced.
+
+**Privacy**: the export is read back and compared against the classroom
+database, looking for logins, names, e-mail addresses, initial passwords,
+feedback text and discussion messages - and for a `SubjectID` that is not one
+of the surrogate keys. Those are reported as violations. A name inside a
+student's own source file is reported as a note instead: that is their code,
+not a leak by the exporter, but it is worth knowing before publishing.
+
+Anything wrong makes it exit 1, so it can gate a release. An empty
+`CodeStateID` on a student's first `Session.Start` is a note, not a violation.
+
+Environment variables: `PROGSNAP_LOGGING` (`off` disables the whole log),
+`PROGSNAP_EDIT_CAPTURE`, `PROGSNAP_EDIT_INTERVAL_SECONDS`,
+`PROGSNAP_MAX_OUTPUT_CHARS` (default 20000 - program output is clipped at this
+length), `PROGSNAP_COURSE_ID`, `PROGSNAP_TERM_ID`.
+
+`npm run reset` deletes the log along with everything else, so export before
+resetting if the data matters.
+
 ## Known limitations / things to improve next
 
 - **No automated test cases** — by design, per your requirements. Grading
@@ -236,6 +338,9 @@ Environment variables (all optional): `MIRROR_DIR` (default `./mirror`),
   would mean creating and removing one on every press of Run. Only
   assignments with network access are affected; the rest still get
   `--network=none`.
+- **The process log only grows** - nothing prunes it. Code snapshots are
+  deduplicated, so a term of work is megabytes rather than gigabytes, but
+  with `File.Edit` capture on and a short interval it is worth watching.
 - **Student accounts are teacher-created only** — no self-signup, no
   password reset flow. For a small class this is usually fine; you might
   want to add a "reset password" feature if it becomes a pain.
@@ -264,6 +369,7 @@ java-classroom/
 ├── server.js              # Express app entry point
 ├── sandbox.js               # Docker-based code execution sandbox
 ├── mirror.js                # The file server a networked run can download from
+├── progsnap.js              # The process log, in ProgSnap2's shape
 ├── db/database.js          # SQLite connection + schema
 ├── middleware/auth.js      # Login/role-check middleware
 ├── routes/
@@ -273,6 +379,7 @@ java-classroom/
 │   ├── discussions.js       # Discussion threads + messages
 │   ├── notifications.js     # Class-wide announcements
 │   ├── mirror.js            # Files served to the sandbox over HTTP
+│   ├── progsnap.js          # Edit capture config + the editor's reports
 │   ├── tests.js             # Sitting a test, reading the result
 │   └── grades.js            # Grading
 ├── public/
@@ -280,5 +387,9 @@ java-classroom/
 │   ├── student.html / js/student.js
 │   ├── teacher.html / js/teacher.js
 │   └── css/style.css
-└── scripts/seed.js         # Creates initial accounts
+└── scripts/
+    ├── seed.js              # Creates initial accounts
+    ├── backup-db.js         # Consistent snapshot of the database + files
+    ├── export-progsnap2.js  # Process data as a ProgSnap2 dataset
+    └── validate-progsnap2.js # Checks an export: conformance and privacy
 ```

@@ -735,6 +735,9 @@ async function setupEditor() {
     fontSize: 14,
     minimap: { enabled: false },
   });
+  // Only a flag is set here, so typing stays free; the snapshot itself goes
+  // out on a timer, and only when edit capture is switched on server-side.
+  editor.onDidChangeModelContent(() => noteEdit());
   // The grip under the editor; Monaco's automaticLayout follows the height.
   makeEditorResizable(document.getElementById("editor-layout"));
   applyEditorToActiveFile();
@@ -981,6 +984,83 @@ function entryFile() {
 // The editor is the single source of truth while a file is open, so its text
 // has to be written back before anything reads the project. A binary file is
 // never in the editor, so there is nothing to write back for it.
+// ---------- Process data: reporting edits (off unless enabled) ----------
+//
+// The server logs everything it can see by itself - runs, submissions, marks.
+// Editing happens here in the browser, so if the course wants edit data, the
+// editor has to send it. The server decides whether it wants it at all
+// (PROGSNAP_EDIT_CAPTURE) and how often (PROGSNAP_EDIT_INTERVAL_SECONDS); this
+// side only obeys, and the server enforces the interval regardless.
+//
+// What travels is a snapshot of the project, the same thing a run sends -
+// never keystrokes, and never anything the student did not type into a file.
+
+let editCapture = { enabled: false, intervalSeconds: 60 };
+let editCaptureTimer = null;
+let editSinceLastReport = false;
+let lastReportedCodeState = null;
+
+async function loadEditCaptureConfig() {
+  try {
+    const cfg = await api("/api/progsnap/config");
+    editCapture = {
+      enabled: !!(cfg.enabled && cfg.editCapture),
+      intervalSeconds: cfg.editIntervalSeconds || 60,
+    };
+  } catch {
+    editCapture = { enabled: false, intervalSeconds: 60 };
+  }
+  if (editCapture.enabled) startEditCapture();
+}
+
+function startEditCapture() {
+  if (editCaptureTimer) clearInterval(editCaptureTimer);
+  editCaptureTimer = setInterval(reportEdit, editCapture.intervalSeconds * 1000);
+}
+
+// Called by the editor on every change: just a flag, so typing costs nothing.
+function noteEdit() {
+  if (editCapture.enabled) editSinceLastReport = true;
+}
+
+async function reportEdit() {
+  if (!editCapture.enabled || !editSinceLastReport) return;
+  if (!activeAssignment || !isEditable()) return;
+
+  syncEditorToFile();
+  const files = projectFiles.map((f) => ({
+    filename: f.filename,
+    content: f.content,
+    encoding: f.encoding || "text",
+  }));
+  if (files.length === 0) return;
+
+  // Nothing new since the last report means nothing to say - the student may
+  // have typed a character and deleted it again.
+  const fingerprint = JSON.stringify(files);
+  if (fingerprint === lastReportedCodeState) {
+    editSinceLastReport = false;
+    return;
+  }
+
+  try {
+    await api("/api/progsnap/edit", {
+      method: "POST",
+      body: JSON.stringify({
+        assignmentId: activeAssignment.id,
+        entry: entryFile(),
+        filename: activeFile,
+        clientTimestamp: new Date().toISOString(),
+        files,
+      }),
+    });
+    lastReportedCodeState = fingerprint;
+    editSinceLastReport = false;
+  } catch {
+    // A lost snapshot is a lost row of research data; the lesson goes on.
+  }
+}
+
 function syncEditorToFile() {
   if (!editor) return;
   const file = currentFile();
@@ -1866,4 +1946,7 @@ document.getElementById("logout-btn").onclick = async () => {
   // ui.js already asked for these on load; this call is what reliably fills
   // the sidebar list, whose renderer is defined in this file.
   await loadNotifications();
+  // Does the course collect edit data, and how often? Off by default, so
+  // this usually sets a flag and stops there.
+  await loadEditCaptureConfig();
 })();

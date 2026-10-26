@@ -13,6 +13,7 @@ const uploadRoutes = require("./routes/uploads");
 const notificationRoutes = require("./routes/notifications");
 const testRoutes = require("./routes/tests");
 const mirrorRoutes = require("./routes/mirror");
+const progsnapRoutes = require("./routes/progsnap");
 
 const app = express();
 
@@ -80,6 +81,7 @@ app.use("/api/uploads", uploadRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/tests", testRoutes);
 app.use("/api/mirror", mirrorRoutes);
+app.use("/api/progsnap", progsnapRoutes);
 
 app.use(express.static(path.join(__dirname, "public")));
 

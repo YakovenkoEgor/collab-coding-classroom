@@ -12,6 +12,7 @@ const express = require("express");
 const db = require("../db/database");
 const { requireLogin, requireRole } = require("../middleware/auth");
 const testing = require("../testing");
+const progsnap = require("../progsnap");
 const rules = require("../assignmentRules");
 
 const router = express.Router();
@@ -127,6 +128,16 @@ router.post(
       "INSERT INTO test_attempts (assignment_id, student_id) VALUES (?, ?)"
     ).run(assignment.id, studentId);
 
+    // Process data: sitting a test is not a programming event, so it carries
+    // dataset-specific types. No answers are logged - only that it started.
+    progsnap.logEvent({
+      eventType: progsnap.EventType.X_TEST_START,
+      subjectId: studentId,
+      sessionId: req.sessionID,
+      assignmentId: assignment.id,
+      extra: { "X-TestKind": assignment.test_kind || "graded" },
+    });
+
     const attempt = testing.attemptFor(assignment.id, studentId);
     res.json({
       state: "in-progress",
@@ -222,6 +233,15 @@ router.post(
       ).run(attempt.id);
     }
     const closed = testing.attemptFor(assignment.id, studentId);
+
+    progsnap.logEvent({
+      eventType: progsnap.EventType.X_TEST_SUBMIT,
+      subjectId: studentId,
+      sessionId: req.sessionID,
+      assignmentId: assignment.id,
+      extra: { "X-TestKind": assignment.test_kind || "graded" },
+    });
+
     res.json({ state: "submitted", submittedAt: closed.submittedAt });
   }
 );
