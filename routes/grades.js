@@ -25,7 +25,7 @@ router.get("/export.csv", requireLogin, requireRole("teacher"), (req, res) => {
   // are actually marked, and every other kind of assignment.
   const assignments = db
     .prepare(
-      `SELECT id, title, max_score AS maxScore FROM assignments
+      `SELECT id, title FROM assignments
        WHERE type <> 'test' OR test_kind = 'graded'
        ORDER BY created_at`
     )
@@ -100,14 +100,20 @@ router.put(
     if (!studentId) return res.status(400).json({ error: "Не указан ученик" });
 
     const assignment = db
-      .prepare("SELECT max_score FROM assignments WHERE id = ?")
+      .prepare("SELECT id FROM assignments WHERE id = ?")
       .get(req.params.assignmentId);
     if (!assignment) return res.status(404).json({ error: "Задание не найдено" });
 
-    // The top mark depends on the student's study group, which may have its
-    // own rule for this assignment.
-    const maxScore =
-      rules.maxScoreFor(req.params.assignmentId, studentId) ?? assignment.max_score;
+    // The top mark comes from the student's study group and nowhere else.
+    // Without one there is nothing to mark against: either the assignment was
+    // not given to that group, or it was given a deadline but no score.
+    const maxScore = rules.maxScoreFor(req.params.assignmentId, studentId);
+    if (maxScore === null || maxScore === undefined) {
+      return res.status(409).json({
+        error:
+          "Для учебной группы этого ученика максимальный балл за задание не задан — выставить оценку нельзя",
+      });
+    }
 
     const normalized = normalizeScore(score, maxScore);
     if (normalized.error) return res.status(400).json({ error: normalized.error });

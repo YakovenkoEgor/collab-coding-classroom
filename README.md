@@ -166,13 +166,50 @@ Deleting a student removes their work, marks, discussions, test attempts and
 process-log events along with the account, and asks for their login typed out
 as confirmation.
 
+## Deadlines and top marks
+
+Both exist **per study group only** - an assignment has none of its own. The
+assignment form carries one row per group, each with a deadline and a maximum
+score, either of which may be left empty.
+
+A group with **neither** set has simply not been given the assignment: its
+students see it in their list, greyed out and not clickable, with
+*не требует выполнения* where the deadline would be. The server agrees - a
+request to submit, attach files, or start the test is refused the same way, so
+a typed address gets nowhere. The teacher's roster says the same thing in the
+status column rather than calling it "не начато", which would read as a
+reproach.
+
+Consequences worth knowing:
+
+- **A student with no study group gets nothing.** There is no rule that could
+  apply to them, so every assignment reads *не требует выполнения* until they
+  are given a group (which the roster's Изменить button does).
+- **A deadline without a maximum score** leaves the assignment active but
+  unmarkable: the grade panel says so, and `PUT /api/grades/...` refuses.
+  Marks already given stay as they are.
+- **Withdrawing an assignment** from a group does not delete marks already
+  given. A student keeps seeing the mark on their dashboard; it drops out of
+  the "баллов: N из M" total, because the scale it was marked on is gone.
+- **Upgrading an existing install** does not withdraw anything: on first start
+  after this change, every study group gets a rule carrying the assignment's
+  old deadline and top mark (`[db] migrated deadlines and top marks to
+  per-group rules`). It runs once, so a group created later starts out without
+  a rule - which is exactly how "not given to them" is expressed.
+
+`assignments.deadline` and `assignments.max_score` are still on the table so
+old rows keep their history, but nothing reads them any more; everything goes
+through `assignmentRules.js`.
+
 ## Using the app
 
 ### As the teacher
 
 1. Log in - this lands on `/teacher/dashboard`, the four sections. Open
    **Задания** and click **+ Новое задание**: a title, a description, and
-   optional starter code.
+   optional starter code. The table *Сроки и баллы по группам* is what
+   actually hands the assignment out - a group left blank there does not get
+   it (see *Deadlines and top marks* above).
 2. **Обучающиеся** is the roster: add or import accounts there, filter and
    sort by any column, change a student's details, or remove them. Give each
    student their username and password directly - there is no self-signup, by

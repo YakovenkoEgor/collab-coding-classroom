@@ -510,11 +510,14 @@ router.get("/users/:id", requireLogin, requireRole("teacher"), (req, res) => {
 
   const assignments = db
     .prepare(
-      // The deadline and top mark are this student's group's, falling back to
-      // the assignment's own (see assignmentRules.js).
+      // The deadline and top mark are this student's group's and nothing
+      // else's; neither set means the assignment was not given to that group
+      // (see assignmentRules.js).
       `SELECT a.id AS assignmentId, a.title, a.archived,
-              COALESCE(r.deadline, a.deadline) AS deadline,
-              COALESCE(r.max_score, a.max_score) AS maxScore,
+              r.deadline AS deadline,
+              r.max_score AS maxScore,
+              CASE WHEN r.deadline IS NOT NULL OR r.max_score IS NOT NULL
+                   THEN 1 ELSE 0 END AS isActive,
               s.version_number AS latestVersion, s.status,
               s.created_at AS lastActivity,
               g.score, g.feedback,

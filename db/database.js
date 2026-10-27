@@ -461,6 +461,74 @@ if (!columnNames("assignments").includes("deadline")) {
   console.log("[db] migrated assignments table: added deadline");
 }
 
+// Deadlines and top marks used to live on the assignment, with per-group rows
+// as exceptions; now they exist only per group, and a group with neither is
+// simply not given the assignment. So every group that had been following the
+// assignment's own values gets a rule carrying them - otherwise upgrading the
+// platform would silently withdraw every assignment from every group.
+//
+// Runs once: a group that appears later is meant to start out without a rule,
+// which is exactly how "not given to them" is expressed.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS schema_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )
+`);
+
+{
+  const done = db
+    .prepare("SELECT value FROM schema_meta WHERE key = 'group_rules_backfill'")
+    .get();
+  if (!done) {
+    const backfill = db.transaction(() => {
+      const groups = db
+        .prepare(
+          `SELECT DISTINCT group_name AS groupName FROM users
+           WHERE role = 'student' AND group_name IS NOT NULL
+             AND TRIM(group_name) <> ''`
+        )
+        .all()
+        .map((row) => row.groupName);
+
+      const assignments = db
+        .prepare("SELECT id, deadline, max_score AS maxScore FROM assignments")
+        .all();
+
+      const existing = db.prepare(
+        `SELECT 1 FROM assignment_group_rules
+         WHERE assignment_id = ? AND group_name = ?`
+      );
+      const insert = db.prepare(
+        `INSERT INTO assignment_group_rules
+           (assignment_id, group_name, deadline, max_score)
+         VALUES (?, ?, ?, ?)`
+      );
+
+      let added = 0;
+      for (const assignment of assignments) {
+        for (const groupName of groups) {
+          if (existing.get(assignment.id, groupName)) continue;
+          insert.run(assignment.id, groupName, assignment.deadline, assignment.maxScore);
+          added++;
+        }
+      }
+
+      db.prepare(
+        "INSERT INTO schema_meta (key, value) VALUES ('group_rules_backfill', ?)"
+      ).run(new Date().toISOString());
+      return added;
+    });
+
+    const added = backfill();
+    if (added > 0) {
+      console.log(
+        `[db] migrated deadlines and top marks to per-group rules: ${added} row(s) added`
+      );
+    }
+  }
+}
+
 // Assignments created before starter projects keep their starter in
 // assignments.starter_code. Give each one a Main.java entry file to match.
 const legacyStarters = db

@@ -5,7 +5,7 @@
 // fills the middle.
 
 function timelinessCell(row) {
-  if (!row.handedIn) return '<span class="muted">—</span>';
+  if (!row.isActive || !row.handedIn) return '<span class="muted">—</span>';
   if (!row.deadline) return '<span class="muted">без дедлайна</span>';
   if (row.timeliness === "onTime") return '<span class="on-time">в срок</span>';
   if (row.timeliness === "late") return '<span class="late">с опозданием</span>';
@@ -13,12 +13,18 @@ function timelinessCell(row) {
 }
 
 function statusCell(row) {
+  if (!row.isActive) return '<span class="muted">не требует выполнения</span>';
   if (row.handedIn) return '<span class="badge submitted">сдано</span>';
   if (row.started) return '<span class="badge draft">в работе</span>';
   return '<span class="badge">не начато</span>';
 }
 
 function scoreCell(row) {
+  // A mark already given is a fact, so it is shown even if the assignment was
+  // later withdrawn from the group.
+  if (!row.isActive && (row.score === null || row.score === undefined)) {
+    return '<span class="muted">—</span>';
+  }
   // A survey is never marked, so an empty cell there is the answer, not a gap.
   if (row.type === "test" && row.testKind === "survey") {
     return '<span class="muted">не оценивается</span>';
@@ -26,15 +32,28 @@ function scoreCell(row) {
   if (row.score === null || row.score === undefined) {
     return '<span class="muted">—</span>';
   }
-  return `<strong>${row.score}</strong> <span class="muted">из ${row.maxScore}</span>`;
+  // "из N" needs an N: a withdrawn assignment keeps its mark but loses the
+  // scale it was marked on.
+  return row.maxScore
+    ? `<strong>${row.score}</strong> <span class="muted">из ${row.maxScore}</span>`
+    : `<strong>${row.score}</strong>`;
 }
 
 function summaryRow(row) {
+  // A row for an assignment the group was not given is shown but does not
+  // open: there is nothing behind it.
   return `
-    <tr class="summary-row" data-id="${row.assignmentId}">
+    <tr class="summary-row${row.isActive ? "" : " is-inactive"}"
+        data-id="${row.assignmentId}" data-active="${row.isActive ? "1" : "0"}">
       <td>${escapeHtml(row.title)}</td>
       <td>${typeBadge(row.type)}</td>
-      <td>${row.deadline ? escapeHtml(formatDeadline(row.deadline)) : '<span class="muted">—</span>'}</td>
+      <td>${
+        !row.isActive
+          ? '<span class="muted">не требует выполнения</span>'
+          : row.deadline
+            ? escapeHtml(formatDeadline(row.deadline))
+            : '<span class="muted">—</span>'
+      }</td>
       <td>${statusCell(row)}</td>
       <td>${timelinessCell(row)}</td>
       <td>${scoreCell(row)}</td>
@@ -74,16 +93,25 @@ function studentFullName(user) {
   return full || user.displayName || user.username;
 }
 
-function totals(summary) {
-  const scored = summary.filter(
-    (row) => row.score !== null && row.score !== undefined
+function totals(all) {
+  // Two different populations: what has to be done is the active assignments,
+  // while marks include anything already graded - a withdrawn assignment keeps
+  // the mark it was given.
+  const active = all.filter((row) => row.isActive);
+  const scored = all.filter(
+    (row) => row.score !== null && row.score !== undefined && row.maxScore
   );
-  const earned = scored.reduce((sum, row) => sum + row.score, 0);
-  const possible = scored.reduce((sum, row) => sum + (row.maxScore || 0), 0);
-  const late = summary.filter((row) => row.timeliness === "late").length;
-  const handedIn = summary.filter((row) => row.handedIn).length;
 
-  const parts = [`сдано работ: ${handedIn} из ${summary.length}`];
+  const earned = scored.reduce((sum, row) => sum + row.score, 0);
+  const possible = scored.reduce((sum, row) => sum + row.maxScore, 0);
+  const handedIn = active.filter((row) => row.handedIn).length;
+  const late = active.filter((row) => row.timeliness === "late").length;
+
+  const parts = [
+    active.length === 0
+      ? "заданий к выполнению нет"
+      : `сдано работ: ${handedIn} из ${active.length}`,
+  ];
   if (scored.length > 0) parts.push(`баллов: ${earned} из ${possible}`);
   if (late > 0) parts.push(`с опозданием: ${late}`);
   return parts.join(" · ");
@@ -119,6 +147,7 @@ async function renderDashboard() {
     </div>`;
 
   main.querySelectorAll("tr.summary-row").forEach((tr) => {
+    if (tr.dataset.active !== "1") return;
     tr.onclick = () => {
       window.location.href = `/student/work?id=${tr.dataset.id}`;
     };

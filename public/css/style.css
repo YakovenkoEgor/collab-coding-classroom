@@ -434,6 +434,16 @@ h3 { font-size: 14px; margin: 0 0 10px 0; color: var(--text-dim); text-transform
   overflow: hidden;
 }
 
+/* An assignment the student's study group was not given: visible, so they know
+   it exists, but there is nothing behind it to open. */
+.assignment-item.is-inactive,
+.summary-row.is-inactive {
+  cursor: default;
+  opacity: 0.55;
+}
+.assignment-item.is-inactive:hover { background: transparent; border-color: var(--border); }
+.summary-row.is-inactive:hover { background: transparent; }
+
 /* --- The student's dashboard --- */
 
 .profile-table td { border-bottom: none; padding: 4px 10px 4px 0; }

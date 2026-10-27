@@ -55,17 +55,33 @@ async function loadAssignments() {
   }
   list.forEach((a) => {
     const div = document.createElement("div");
-    div.className = "assignment-item" + (activeAssignment && activeAssignment.id === a.id ? " active" : "");
-    div.innerHTML = `<div class="title">${escapeHtml(a.title)}${deadlineMark(a)}</div>
+    // An assignment the student's study group was not given: shown, so they
+    // know it exists, but there is nothing to open.
+    const inactive = a.isActive === false;
+
+    div.className =
+      "assignment-item" +
+      (activeAssignment && activeAssignment.id === a.id ? " active" : "") +
+      (inactive ? " is-inactive" : "");
+    div.innerHTML = `<div class="title">${escapeHtml(a.title)}${
+      inactive ? "" : deadlineMark(a)
+    }</div>
       <div class="meta">${typeBadge(a.type)} ${
-        a.deadline
-          ? "до " + formatDeadline(a.deadline)
-          : new Date(a.created_at).toLocaleDateString()
+        inactive
+          ? "не требует выполнения"
+          : a.deadline
+            ? "до " + formatDeadline(a.deadline)
+            : new Date(a.created_at).toLocaleDateString()
       }</div>`;
-    // Each assignment is its own page, so this is a link, not a redraw.
-    div.onclick = () => {
-      window.location.href = `/student/work?id=${a.id}`;
-    };
+
+    if (inactive) {
+      div.title = "Это задание не требует выполнения вашей учебной группой";
+    } else {
+      // Each assignment is its own page, so this is a link, not a redraw.
+      div.onclick = () => {
+        window.location.href = `/student/work?id=${a.id}`;
+      };
+    }
     container.appendChild(div);
   });
 }

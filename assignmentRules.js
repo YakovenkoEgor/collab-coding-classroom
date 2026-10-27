@@ -1,10 +1,14 @@
 // Per-group deadlines and top marks.
 //
-// An assignment carries a deadline and a maximum score of its own; those are
-// what everyone gets by default. A study group can be given its own values in
-// assignment_group_rules - one row per (assignment, group), each field
-// optional, NULL meaning "whatever the assignment says". Students who belong
-// to no group always follow the assignment.
+// An assignment carries nothing of its own here: a deadline and a maximum
+// score exist only per study group, in assignment_group_rules - one row per
+// (assignment, group), each field optional.
+//
+// No row, or a row with both fields empty, means the assignment is simply not
+// given to that group: its students see it in their list, greyed out and not
+// clickable, with "не требует выполнения" where the deadline would be. The
+// same follows for a student who belongs to no group at all - there is no rule
+// that could apply to them.
 //
 // Everything that shows or checks a deadline or a top mark resolves it through
 // this module, so the two roles never disagree about which number applies.
@@ -29,9 +33,13 @@ const RULE_JOIN_FOR_USERS = `
     ON r.assignment_id = a.id AND r.group_name = u.group_name`;
 
 // SQL: the resolved values, for use in a SELECT alongside either join above.
+// `isActive` is the one thing every screen needs: whether this assignment has
+// been given to this student's group at all.
 const RESOLVED_COLUMNS = `
-  COALESCE(r.deadline, a.deadline) AS deadline,
-  COALESCE(r.max_score, a.max_score) AS maxScore`;
+  r.deadline AS deadline,
+  r.max_score AS maxScore,
+  CASE WHEN r.deadline IS NOT NULL OR r.max_score IS NOT NULL
+       THEN 1 ELSE 0 END AS isActive`;
 
 function rulesForAssignment(assignmentId) {
   return db
@@ -43,16 +51,44 @@ function rulesForAssignment(assignmentId) {
     .all(assignmentId);
 }
 
-// The top mark that applies to one student on one assignment.
+// The top mark that applies to one student on one assignment, or null when
+// their group has none - which means the work cannot be marked.
 function maxScoreFor(assignmentId, studentId) {
   const row = db
     .prepare(
-      `SELECT COALESCE(r.max_score, a.max_score) AS maxScore
+      `SELECT r.max_score AS maxScore
        FROM assignments a ${RULE_JOIN_FOR_STUDENT}
        WHERE a.id = ?`
     )
     .get(studentId, assignmentId);
   return row ? row.maxScore : null;
+}
+
+// Whether one student has been given one assignment at all. Everything a
+// student can do to an assignment - open it, run it, hand it in, sit the test -
+// goes through this, so a direct request cannot get round the list.
+function isActiveFor(assignmentId, studentId) {
+  const row = db
+    .prepare(
+      `SELECT r.deadline AS deadline, r.max_score AS maxScore
+       FROM assignments a ${RULE_JOIN_FOR_STUDENT}
+       WHERE a.id = ?`
+    )
+    .get(studentId, assignmentId);
+  if (!row) return false;
+  return row.deadline !== null || row.maxScore !== null;
+}
+
+// The deadline that applies to one student, or null when they have none.
+function deadlineFor(assignmentId, studentId) {
+  const row = db
+    .prepare(
+      `SELECT r.deadline AS deadline
+       FROM assignments a ${RULE_JOIN_FOR_STUDENT}
+       WHERE a.id = ?`
+    )
+    .get(studentId, assignmentId);
+  return row ? row.deadline : null;
 }
 
 // Every study group the class actually has, plus any group that already has a
@@ -94,6 +130,8 @@ module.exports = {
   RESOLVED_COLUMNS,
   rulesForAssignment,
   maxScoreFor,
+  isActiveFor,
+  deadlineFor,
   knownGroups,
   replaceRules,
 };

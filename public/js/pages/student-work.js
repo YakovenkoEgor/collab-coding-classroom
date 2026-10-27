@@ -28,6 +28,18 @@ async function openAssignmentFromUrl() {
     return;
   }
 
+  // Their study group was not given this assignment: the list does not let
+  // them in, and neither does a typed address.
+  if (assignment.isActive === false) {
+    main.innerHTML = `
+      <div class="card">
+        <h2>${escapeHtml(assignment.title)}</h2>
+        <p class="muted">Это задание не требует выполнения вашей учебной группой.</p>
+        <a class="button-link secondary" href="/student/dashboard">К моей успеваемости</a>
+      </div>`;
+    return;
+  }
+
   // Mark it in the sidebar before the screen is built: the list was drawn on
   // load, when nothing was open yet.
   activeAssignment = assignment;

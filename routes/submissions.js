@@ -9,6 +9,7 @@ const {
 } = require("../sandbox");
 const projectFiles = require("../projectFiles");
 const progsnap = require("../progsnap");
+const rules = require("../assignmentRules");
 
 const router = express.Router();
 
@@ -416,6 +417,14 @@ router.post(
     if (assignmentType === "test") {
       return res.status(400).json({
         error: "Это задание — тест, ответы сохраняются отдельно",
+      });
+    }
+
+    // Their study group was never given this assignment. The list does not let
+    // them open it, so this only answers a request made by hand.
+    if (!rules.isActiveFor(assignmentId, studentId)) {
+      return res.status(409).json({
+        error: "Это задание не требует выполнения вашей группой",
       });
     }
 

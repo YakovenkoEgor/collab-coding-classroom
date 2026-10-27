@@ -24,7 +24,6 @@ let editorReady = null;
 const MIN_SCORE = 0;
 const MIN_MAX_SCORE = 1;
 const MAX_MAX_SCORE = 100;
-const DEFAULT_MAX_SCORE = 15;
 
 // A survey records answers but is never marked: no grade box, no column in
 // the gradebook export (see routes/grades.js).
@@ -36,14 +35,12 @@ function isSurvey() {
   );
 }
 
-// Top mark that applies right now. While one student's work is open it is
-// their study group's maximum (groups can have their own - see
-// assignmentRules.js); otherwise the assignment's own.
+// The top mark that applies to the student being reviewed. An assignment has
+// none of its own any more - it exists per study group - so outside a review
+// there is nothing to show.
 function currentMaxScore() {
-  const forStudent = activeStudent && activeStudent.maxScore;
-  if (Number.isInteger(forStudent) && forStudent > 0) return forStudent;
-  const value = activeAssignment && activeAssignment.max_score;
-  return Number.isInteger(value) && value > 0 ? value : DEFAULT_MAX_SCORE;
+  const value = activeStudent && activeStudent.maxScore;
+  return Number.isInteger(value) && value > 0 ? value : null;
 }
 
 // ---------- Student names ----------
@@ -265,14 +262,8 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
         <div id="a-files-list"></div>
       </div>
       <div class="form-row">
-        <label>Сроки и баллы</label>
-        ${renderGroupRuleEditor(
-          { deadline: editing ? assignment.deadline : null,
-            maxScore: editing ? assignment.max_score : DEFAULT_MAX_SCORE },
-          groups || [],
-          ruleByGroup,
-          groupsProblem
-        )}
+        <label>Сроки и баллы по группам</label>
+        ${renderGroupRuleEditor(groups || [], ruleByGroup, groupsProblem)}
       </div>
       <div class="form-row" id="starter-code-row">
         <label>Стартовый проект</label>
@@ -485,12 +476,11 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
         title,
         description,
         type: typeSelect.value,
-        maxScore: Number(document.getElementById("a-max-score").value),
         files,
         starterFiles,
         starterEntry,
         starterText: document.getElementById("a-starter-text").value,
-        deadline: document.getElementById("a-deadline").value,
+        // Deadlines and top marks exist only per study group now.
         groupRules: collectGroupRules(),
         networkAccess: document.getElementById("a-network").checked,
         removeFileIds: removedHandoutIds,
@@ -1153,15 +1143,6 @@ async function renderOverview() {
     <div class="card">
       <h2>${escapeHtml(activeAssignment.title)} ${typeBadge(activeAssignment.type)}</h2>
       <p class="muted assignment-description">${escapeHtml(activeAssignment.description || "")}</p>
-      <p class="muted">
-        ${
-          activeAssignment.deadline
-            ? `Дедлайн: <strong>${escapeHtml(
-                formatDeadline(activeAssignment.deadline)
-              )}</strong> · `
-            : "Без дедлайна · "
-        }максимальный балл: <strong>${currentMaxScore()}</strong>
-      </p>
       ${renderGroupRuleSummary(groupRules)}
       ${renderFileLinks(activeAssignment.id, files)}
       <div class="toolbar">
@@ -1227,7 +1208,7 @@ async function renderOverview() {
     const tr = document.createElement("tr");
     tr.className = "student-row";
     tr.innerHTML = `
-      <td>${escapeHtml(studentName(s))}${deadlineMark(s)}</td>
+      <td>${escapeHtml(studentName(s))}${s.isActive ? deadlineMark(s) : ""}</td>
       <td class="muted">${escapeHtml(s.groupName || "—")}</td>
       <td>${
         isFreeform
@@ -1241,22 +1222,26 @@ async function renderOverview() {
               : "—"
       }</td>
       <td>${
-        isTest
-          ? testState === "submitted"
-            ? '<span class="badge submitted">сдан</span>'
-            : testState === "in-progress"
-              ? '<span class="badge draft">выполняется</span>'
-              : '<span class="badge">не начат</span>'
-          : handedIn
-            ? `<span class="badge ${isFreeform ? "submitted" : s.status}">${
-                isFreeform ? "приложено" : versionStatusLabel(s.status)
-              }</span>`
-            : '<span class="badge">не начато</span>'
+        // A student whose study group was not given this assignment has not
+        // failed to start it - it was never theirs to do.
+        !s.isActive
+          ? '<span class="muted">не требует выполнения</span>'
+          : isTest
+            ? testState === "submitted"
+              ? '<span class="badge submitted">сдан</span>'
+              : testState === "in-progress"
+                ? '<span class="badge draft">выполняется</span>'
+                : '<span class="badge">не начат</span>'
+            : handedIn
+              ? `<span class="badge ${isFreeform ? "submitted" : s.status}">${
+                  isFreeform ? "приложено" : versionStatusLabel(s.status)
+                }</span>`
+              : '<span class="badge">не начато</span>'
       }</td>
       <td class="muted">${activityText}</td>
       <td>${
         s.score !== null && s.score !== undefined
-          ? `${s.score} / ${s.maxScore ?? currentMaxScore()}`
+          ? `${s.score}${s.maxScore ? ` / ${s.maxScore}` : ""}`
           : "—"
       }</td>
     `;
@@ -1286,7 +1271,7 @@ function testSummaryCell(row) {
 // own deadline and maximum score; every study group gets a row below it, and
 // an empty field there means the group follows the default, so clearing both
 // fields removes the exception on save.
-function renderGroupRuleEditor(defaults, groups, ruleByGroup, problem) {
+function renderGroupRuleEditor(groups, ruleByGroup, problem) {
   // Told apart on purpose: "the class has no groups" is a normal state, while
   // "the list could not be read" is a fault worth naming.
   const note = problem
@@ -1294,12 +1279,13 @@ function renderGroupRuleEditor(defaults, groups, ruleByGroup, problem) {
          Не удалось загрузить учебные группы: ${escapeHtml(problem)}.
        </div>`
     : groups.length === 0
-      ? `<span class="muted" style="font-size:12px">
-           Учебных групп пока нет. Добавьте учеников с указанием группы — и здесь
-           можно будет задать каждой группе свой срок и свой максимальный балл.
-         </span>`
+      ? `<div class="form-message error">
+           Учебных групп пока нет, а сроки и баллы задаются только по группам —
+           выдать это задание будет некому. Добавьте ученикам учебные группы.
+         </div>`
       : `<span class="muted" style="font-size:12px">
-           Пустое поле в строке группы означает, что для неё действует значение по умолчанию.
+           Если у группы не заданы ни дедлайн, ни балл, задание ей не выдаётся:
+           ученики увидят его в списке с пометкой «не требует выполнения».
          </span>`;
 
   const rows = groups
@@ -1320,22 +1306,9 @@ function renderGroupRuleEditor(defaults, groups, ruleByGroup, problem) {
     })
     .join("");
 
-  const defaultDeadline = defaults.deadline
-    ? escapeHtml(String(defaults.deadline).replace(" ", "T"))
-    : "";
-
   return `${note}
       <table class="group-rules">
         <thead><tr><th>Учебная группа</th><th>Дедлайн</th><th class="max-score-col">Макс. балл</th></tr></thead>
-        <tbody>
-          <tr class="group-rules-default">
-            <td>Значение по умолчанию</td>
-            <td><input type="datetime-local" id="a-deadline" value="${defaultDeadline}"></td>
-            <td class="max-score-col"><input type="number" id="a-max-score" step="1"
-                       min="${MIN_MAX_SCORE}" max="${MAX_MAX_SCORE}"
-                       value="${defaults.maxScore}"></td>
-          </tr>
-        </tbody>
         <tbody id="group-rules-body">${rows}</tbody>
       </table>`;
 }
@@ -1350,24 +1323,27 @@ function collectGroupRules() {
   }));
 }
 
-// The exceptions in force, shown under the assignment's own dates so it is
-// clear at a glance which group is on a different schedule or scale.
+// Who the assignment has been given to, and on what terms. This is the whole
+// story now: a group that is not listed here does not have to do it.
 function renderGroupRuleSummary(groupRules) {
-  if (!Array.isArray(groupRules) || groupRules.length === 0) return "";
+  if (!Array.isArray(groupRules) || groupRules.length === 0) {
+    return `<p class="muted">Задание не выдано ни одной учебной группе —
+        ученики видят его с пометкой «не требует выполнения».</p>`;
+  }
   const lines = groupRules
     .map((rule) => {
       const deadline = rule.deadline
         ? `срок ${escapeHtml(formatDeadline(rule.deadline))}`
-        : "срок общий";
+        : "без срока";
       const max =
         rule.maxScore !== null && rule.maxScore !== undefined
           ? `макс. балл ${rule.maxScore}`
-          : "макс. балл общий";
+          : "балл не задан";
       return `<li><strong>${escapeHtml(rule.groupName)}</strong> — ${deadline}, ${max}</li>`;
     })
     .join("");
   return `<div class="group-rules-summary">
-      <span class="muted">Исключения по группам:</span>
+      <span class="muted">Выдано группам:</span>
       <ul>${lines}</ul>
     </div>`;
 }
@@ -1491,14 +1467,21 @@ function renderStudentPanel() {
 
     <div class="card"${isSurvey() ? ' hidden' : ""}>
       <h3>Оценка</h3>
-      <div class="grade-box">
-        <label class="muted">Балл (0–${currentMaxScore()}):</label>
-        <!-- No min/max on purpose: they would stop the stepper dead at the
-             bounds, and we want it to wrap around instead. The range is
-             enforced in wrapScore(), in saveGrade() and on the server. -->
-        <input type="number" id="grade-score" step="1" value="${currentMaxScore()}">
-        <button id="save-grade-btn">Сохранить оценку</button>
-      </div>
+      ${
+        currentMaxScore() === null
+          ? `<p class="muted">Для учебной группы этого ученика максимальный балл
+               за задание не задан, поэтому оценку поставить нельзя. Задайте балл
+               в самом задании, в таблице «Сроки и баллы по группам».</p>`
+          : `<div class="grade-box">
+               <label class="muted">Балл (0–${currentMaxScore()}):</label>
+               <!-- No min/max on purpose: they would stop the stepper dead at
+                    the bounds, and we want it to wrap around instead. The range
+                    is enforced in wrapScore(), in saveGrade() and on the
+                    server. -->
+               <input type="number" id="grade-score" step="1" value="${currentMaxScore()}">
+               <button id="save-grade-btn">Сохранить оценку</button>
+             </div>`
+      }
     </div>
 
     <div class="card">
@@ -1517,10 +1500,14 @@ function renderStudentPanel() {
       renderOverview();
     };
   }
-  document.getElementById("save-grade-btn").onclick = saveGrade;
+  const saveGradeBtn = document.getElementById("save-grade-btn");
+  if (saveGradeBtn) saveGradeBtn.onclick = saveGrade;
   // Covers the stepper arrows, the up/down keys and the scroll wheel - all of
   // them fire "input" after the value changes.
-  document.getElementById("grade-score").addEventListener("input", (e) => wrapScore(e.target));
+  const scoreField = document.getElementById("grade-score");
+  if (scoreField) {
+    scoreField.addEventListener("input", (e) => wrapScore(e.target));
+  }
   document.getElementById("send-message-btn").onclick = sendMessage;
   document.getElementById("message-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") sendMessage();
@@ -1842,6 +1829,7 @@ function wrapScore(input) {
   if (!Number.isInteger(value)) return;
 
   const max = currentMaxScore();
+  if (max === null) return;
   if (value > max) {
     input.value = value === max + 1 ? MIN_SCORE : max;
   } else if (value < MIN_SCORE) {
@@ -1859,15 +1847,21 @@ async function loadGrade() {
   scoreInput.value =
     grade && grade.score !== null && grade.score !== undefined
       ? grade.score
-      : currentMaxScore();
+      : (currentMaxScore() ?? "");
 }
 
 async function saveGrade() {
-  const raw = document.getElementById("grade-score").value.trim();
+  const input = document.getElementById("grade-score");
+  if (!input) return;
+  const raw = input.value.trim();
   let score = null;
   if (raw !== "") {
     score = Number(raw);
     const max = currentMaxScore();
+    if (max === null) {
+      alert("Для учебной группы этого ученика максимальный балл не задан.");
+      return;
+    }
     if (!Number.isInteger(score) || score < MIN_SCORE || score > max) {
       alert(`Балл должен быть целым числом от ${MIN_SCORE} до ${max}.`);
       return;
@@ -2068,18 +2062,28 @@ async function selectStudentProfile(studentId) {
     const tr = document.createElement("tr");
     tr.className = "student-row";
     tr.innerHTML = `
-      <td>${escapeHtml(r.title)}${r.archived ? ' <span class="muted">(в архиве)</span>' : ""}${deadlineMark(r)}</td>
-      <td class="muted">${r.deadline ? formatDeadline(r.deadline) : "—"}</td>
+      <td>${escapeHtml(r.title)}${r.archived ? ' <span class="muted">(в архиве)</span>' : ""}${
+        r.isActive ? deadlineMark(r) : ""
+      }</td>
+      <td class="muted">${
+        r.isActive
+          ? r.deadline
+            ? formatDeadline(r.deadline)
+            : "—"
+          : "не требует выполнения"
+      }</td>
       <td>${r.latestVersion ? "v" + r.latestVersion : "—"}</td>
       <td>${
-        r.status
-          ? `<span class="badge ${r.status}">${versionStatusLabel(r.status)}</span>`
-          : '<span class="badge">не начато</span>'
+        !r.isActive
+          ? '<span class="muted">не требует выполнения</span>'
+          : r.status
+            ? `<span class="badge ${r.status}">${versionStatusLabel(r.status)}</span>`
+            : '<span class="badge">не начато</span>'
       }</td>
       <td class="muted">${r.lastActivity ? new Date(r.lastActivity).toLocaleString() : "—"}</td>
       <td>${
         r.score !== null && r.score !== undefined
-          ? `${r.score} / ${r.maxScore ?? DEFAULT_MAX_SCORE}`
+          ? `${r.score}${r.maxScore ? ` / ${r.maxScore}` : ""}`
           : "—"
       }</td>
     `;
