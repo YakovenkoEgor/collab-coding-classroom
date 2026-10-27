@@ -237,7 +237,7 @@ function makeEditorResizable(layout) {
 // the next login while it is still active, and not before.
 //
 // The list is also handed to the page through onNotificationsLoaded, which
-// student.js and teacher.js use to fill their own sidebar sections.
+// the student's and the teacher's pages use to fill their own lists.
 // ---------------------------------------------------------------------
 
 let notifications = [];

@@ -235,6 +235,78 @@ router.get("/groups", requireLogin, requireRole("teacher"), (req, res) => {
   res.json({ groups: rules.knownGroups(null) });
 });
 
+// A student's own results, one row per assignment: what it was, when it was
+// due, whether they handed it in on time, and what it earned. This is what
+// their dashboard shows, and it is deliberately their own only - a student
+// cannot ask for anybody else's.
+//
+// Registered before "/:id" so "summary" is not read as an assignment id.
+router.get("/summary/me", requireLogin, requireRole("student"), (req, res) => {
+  const studentId = req.session.user.id;
+
+  const rows = db
+    .prepare(
+      `SELECT a.id, a.title, a.type, a.test_kind AS testKind,
+              -- The deadline and the top mark are this student's group's,
+              -- falling back to the assignment's own (see assignmentRules.js).
+              COALESCE(r.deadline, a.deadline) AS deadline,
+              COALESCE(r.max_score, a.max_score) AS maxScore,
+              g.score,
+              -- The hand-in that counts is the last one: that is the version
+              -- the teacher marks, so it is the one the deadline is about.
+              (SELECT MAX(s.created_at) FROM submissions s
+                WHERE s.assignment_id = a.id AND s.student_id = ?
+                  AND s.status = 'submitted') AS submittedAt,
+              (SELECT MAX(t.submitted_at) FROM test_attempts t
+                WHERE t.assignment_id = a.id AND t.student_id = ?
+                  AND t.submitted_at IS NOT NULL) AS testSubmittedAt,
+              (SELECT COUNT(*) FROM submission_uploads u
+                WHERE u.assignment_id = a.id AND u.student_id = ?) AS uploadCount,
+              (SELECT COUNT(*) FROM submissions s
+                WHERE s.assignment_id = a.id AND s.student_id = ?) AS versionCount
+       FROM assignments a
+       ${rules.RULE_JOIN_FOR_STUDENT}
+       LEFT JOIN grades g ON g.assignment_id = a.id AND g.student_id = ?
+       WHERE a.archived = 0
+       ORDER BY a.created_at`
+    )
+    .all(studentId, studentId, studentId, studentId, studentId, studentId);
+
+  const summary = rows.map((row) => {
+    // A test is handed in by submitting an attempt; free-form work is handed
+    // in by attaching files, and has no version to time-stamp.
+    const handedInAt =
+      row.type === "test" ? row.testSubmittedAt : row.submittedAt || null;
+    const handedIn =
+      row.type === "freeform" ? row.uploadCount > 0 : !!handedInAt;
+
+    let timeliness = null;
+    if (handedIn && row.deadline && handedInAt) {
+      // Stored times are UTC; a deadline is local wall-clock time, which is
+      // how it was typed and how it is shown.
+      const due = new Date(String(row.deadline).replace(" ", "T"));
+      const at = new Date(`${String(handedInAt).replace(" ", "T")}Z`);
+      timeliness = at.getTime() <= due.getTime() ? "onTime" : "late";
+    }
+
+    return {
+      assignmentId: row.id,
+      title: row.title,
+      type: row.type,
+      testKind: row.testKind,
+      deadline: row.deadline,
+      maxScore: row.maxScore,
+      score: row.score === undefined ? null : row.score,
+      handedIn,
+      handedInAt,
+      timeliness,
+      started: row.versionCount > 0 || row.uploadCount > 0 || !!row.testSubmittedAt,
+    };
+  });
+
+  res.json({ summary });
+});
+
 router.get("/:id", requireLogin, (req, res) => {
   const assignment = db
     .prepare("SELECT * FROM assignments WHERE id = ?")

@@ -62,7 +62,10 @@ async function loadAssignments() {
           ? "до " + formatDeadline(a.deadline)
           : new Date(a.created_at).toLocaleDateString()
       }</div>`;
-    div.onclick = () => selectAssignment(a);
+    // Each assignment is its own page, so this is a link, not a redraw.
+    div.onclick = () => {
+      window.location.href = `/student/work?id=${a.id}`;
+    };
     container.appendChild(div);
   });
 }
@@ -85,8 +88,13 @@ window.onNotificationsLoaded = (list) => {
   }
   list.forEach((item) => {
     const div = document.createElement("div");
-    div.className = "assignment-item" + (item.dismissed ? " is-dismissed" : "");
-    div.innerHTML = `<div class="title">${escapeHtml(item.body)}</div>
+    div.className =
+      "assignment-item notification-item" + (item.dismissed ? " is-dismissed" : "");
+    // A preview keeps the teacher's line breaks but not the blank lines
+    // between paragraphs: three lines is all it shows, and a gap would eat one.
+    div.innerHTML = `<div class="title">${escapeHtml(
+      item.body.replace(/\n{2,}/g, "\n")
+    )}</div>
       <div class="meta">активно до ${escapeHtml(formatDeadline(item.activeUntil))}${
         item.dismissed ? " · закрыто" : ""
       }</div>`;
@@ -560,7 +568,6 @@ async function selectAssignment(assignment) {
   activeAssignment = assignment;
   selectedVersionForMessage = null;
   activeVersion = null;
-  await loadAssignments(); // re-render sidebar highlight
   await renderMainPanel(); // awaits the editor so loadVersions can fill it
   await Promise.all([
     // Free-form work has no versions - its files are loaded by setupUploads();
@@ -631,15 +638,10 @@ async function renderMainPanel() {
   main.innerHTML = `
     <div class="card">
       <h2>${escapeHtml(activeAssignment.title)} ${typeBadge(activeAssignment.type)}</h2>
-      <p class="muted">${escapeHtml(activeAssignment.description || "")}</p>
+      <p class="muted assignment-description">${escapeHtml(activeAssignment.description || "")}</p>
       <div id="deadline-notice">${renderDeadlineNotice(activeAssignment)}</div>
       <div id="grade-box"></div>
       <div id="assignment-files"></div>
-      ${
-        assignmentType() === "code"
-          ? '<p class="muted" style="font-size:12px">Помните: public-класс должен называться так же, как файл — в <code>Main.java</code> лежит <code>public class Main</code>.</p>'
-          : ""
-      }
     </div>
 
     ${
@@ -1148,8 +1150,8 @@ function renderFileTree() {
       (projectFiles.find((f) => !isJavaFile(f.filename) && !isBinaryFile(f)) || {})
         .filename || "data.txt";
     hint.textContent = entry
-      ? `▶ «Запустить» компилирует все файлы .java и стартует с ${entry}. Файлы данных лежат рядом с программой: new File("${example}") — это относительный путь.`
-      : "▶ Добавьте файл .java, чтобы проект можно было запустить";
+      ? `Файлы данных лежат рядом с программой: new File("${example}") — это относительный путь.`
+      : "Добавьте файл .java, чтобы проект можно было запустить";
   }
 
   renderNetworkHint();
@@ -1934,13 +1936,25 @@ async function sendMessage() {
   }
 }
 
-document.getElementById("logout-btn").onclick = async () => {
-  await api("/api/auth/logout", { method: "POST" });
-  window.location.href = "/login.html";
-};
 
-(async function initStudent() {
-  initEditor();
+// ---------- Page start-up ----------
+//
+// The student's side is two pages - the dashboard and one assignment's working
+// screen - and both load this file plus a small script of their own. What they
+// share happens here: who is logged in, the sidebar, the announcement banners
+// and the Log out button.
+
+async function initStudentPage({ withEditor = false } = {}) {
+  if (withEditor) initEditor();
+
+  const logout = document.getElementById("logout-btn");
+  if (logout) {
+    logout.onclick = async () => {
+      await api("/api/auth/logout", { method: "POST" });
+      window.location.href = "/login.html";
+    };
+  }
+
   await loadMe();
   await loadAssignments();
   // ui.js already asked for these on load; this call is what reliably fills
@@ -1949,4 +1963,4 @@ document.getElementById("logout-btn").onclick = async () => {
   // Does the course collect edit data, and how often? Off by default, so
   // this usually sets a flag and stops there.
   await loadEditCaptureConfig();
-})();
+}

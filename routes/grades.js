@@ -36,24 +36,11 @@ router.get("/export.csv", requireLogin, requireRole("teacher"), (req, res) => {
     grades.map((g) => [`${g.student_id}:${g.assignment_id}`, g.score])
   );
 
-  // The top mark differs per assignment, and can differ per study group within
-  // one assignment, so a bare number in a cell would be ambiguous - the column
-  // header carries the maximum, naming the groups that have their own.
-  function maxScoreLabel(assignment) {
-    const overrides = rules
-      .rulesForAssignment(assignment.id)
-      .filter((r) => r.maxScore !== null);
-    if (overrides.length === 0) return `макс. ${assignment.maxScore}`;
-    const perGroup = overrides
-      .map((r) => `${r.groupName} — ${r.maxScore}`)
-      .join(", ");
-    return `макс. ${assignment.maxScore}; ${perGroup}`;
-  }
-
-  // The group column makes those per-group maxima readable row by row.
-  const rows = [
-    ["Студент", "Группа", ...assignments.map((a) => `${a.title} (${maxScoreLabel(a)})`)],
-  ];
+  // The column header is just the assignment's title: the per-group maxima
+  // used to be spelled out here, which made the header unreadable in a
+  // spreadsheet. The group is a column of its own, and the maxima live in the
+  // assignment itself.
+  const rows = [["Студент", "Группа", ...assignments.map((a) => a.title)]];
   for (const student of students) {
     rows.push([
       student.fullName || student.displayName,

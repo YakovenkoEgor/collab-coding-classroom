@@ -17,7 +17,7 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
       errorBox.style.display = "block";
       return;
     }
-    window.location.href = data.user.role === "teacher" ? "/teacher.html" : "/student.html";
+    window.location.href = data.user.role === "teacher" ? "/teacher/dashboard" : "/student/dashboard";
   } catch (err) {
     errorBox.textContent = "Сервер недоступен.";
     errorBox.style.display = "block";
@@ -71,7 +71,7 @@ document.getElementById("bootstrap-form").addEventListener("submit", async (e) =
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: payload.username, password: payload.password }),
     });
-    window.location.href = login.ok ? "/teacher.html" : "/login.html";
+    window.location.href = login.ok ? "/teacher/dashboard" : "/login.html";
   } catch (err) {
     errorBox.textContent = "Сервер недоступен.";
     errorBox.style.display = "block";
@@ -97,7 +97,7 @@ async function refreshBootstrapOffer() {
     const res = await fetch("/api/auth/me");
     const data = await res.json();
     if (data.user) {
-      window.location.href = data.user.role === "teacher" ? "/teacher.html" : "/student.html";
+      window.location.href = data.user.role === "teacher" ? "/teacher/dashboard" : "/student/dashboard";
       return;
     }
   } catch (e) {}

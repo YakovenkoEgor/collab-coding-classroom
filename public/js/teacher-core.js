@@ -173,30 +173,8 @@ function reviewBadge(count, what) {
 async function loadAssignments() {
   const { assignments: list } = await api("/api/assignments");
   assignments = list;
-  const container = document.getElementById("assignment-list");
-  container.innerHTML = "";
-  if (list.length === 0) {
-    container.innerHTML = '<p class="muted">Заданий пока нет.</p>';
-    return;
-  }
-  list.forEach((a) => {
-    const div = document.createElement("div");
-    div.className = "assignment-item" + (activeAssignment && activeAssignment.id === a.id ? " active" : "");
-    div.innerHTML = `<div class="title">${escapeHtml(a.title)}${reviewBadge(pendingReview.byAssignment[a.id], "assignment")}</div>
-      <div class="meta">${typeBadge(a.type)} ${new Date(a.created_at).toLocaleDateString()}</div>`;
-    div.onclick = () => selectAssignment(a);
-    container.appendChild(div);
-  });
+  return list;
 }
-
-document.getElementById("new-assignment-btn").onclick = async () => {
-  activeAssignment = null;
-  activeStudent = null;
-  activeProfile = null;
-  await loadAssignments();
-  await loadStudentManage();
-  renderNewAssignmentForm();
-};
 
 async function renderNewAssignmentForm() {
   // The study groups the form can set separate rules for. A failure here only
@@ -531,8 +509,9 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
         ? await api(`/api/assignments/${editingAssignmentId}`, { method: "PUT", body })
         : await api("/api/assignments", { method: "POST", body });
 
-      await loadAssignments();
-      selectAssignment(result.assignment);
+      // Each assignment has a page of its own, so saving lands on it - which
+      // also means the browser's Back button goes where the teacher expects.
+      window.location.href = `/assignments?id=${result.assignment.id}`;
     } catch (err) {
       alert(
         (editing ? "Не удалось сохранить задание: " : "Не удалось создать задание: ") +
@@ -1160,9 +1139,6 @@ async function selectAssignment(assignment) {
   activeStudent = null;
   activeProfile = null;
   activeNotification = null;
-  await loadAssignments();
-  await loadStudentManage(); // drop the profile highlight in the sidebar
-  await loadNotificationManage(); // and the notification one
   await renderOverview();
 }
 
@@ -1176,7 +1152,7 @@ async function renderOverview() {
   main.innerHTML = `
     <div class="card">
       <h2>${escapeHtml(activeAssignment.title)} ${typeBadge(activeAssignment.type)}</h2>
-      <p class="muted">${escapeHtml(activeAssignment.description || "")}</p>
+      <p class="muted assignment-description">${escapeHtml(activeAssignment.description || "")}</p>
       <p class="muted">
         ${
           activeAssignment.deadline
@@ -1284,7 +1260,9 @@ async function renderOverview() {
           : "—"
       }</td>
     `;
-    tr.onclick = () => selectStudent(s.studentId, studentName(s), s.maxScore);
+    tr.onclick = () => {
+      window.location.href = workPagePath(s.studentId, activeAssignment.id, "assignment");
+    };
     tbody.appendChild(tr);
   });
 }
@@ -1434,12 +1412,7 @@ async function deleteActiveAssignment() {
     await api(`/api/assignments/${assignment.id}`, { method: "DELETE" });
     activeAssignment = null;
     activeStudent = null;
-    await loadPendingReview();
-    await loadAssignments();
-    document.getElementById("main-content").innerHTML =
-      `<div class="card"><p class="muted">Задание «${escapeHtml(
-        assignment.title
-      )}» удалено.</p></div>`;
+    window.location.href = "/assignments";
   } catch (err) {
     alert("Не удалось удалить задание: " + err.message);
   }
@@ -1467,8 +1440,16 @@ async function selectStudent(studentId, displayName, maxScore) {
 
 function renderStudentPanel() {
   const main = document.getElementById("main-content");
+  // On the pair's own page the heading already carries a way back, so the
+  // panel does not add a second one.
+  const standalone = typeof backFromWorkPage === "function";
+
   main.innerHTML = `
-    <button class="secondary" id="back-to-overview">← Ко всем ученикам</button>
+    ${
+      standalone
+        ? ""
+        : '<button class="secondary" id="back-to-overview">← Ко всем ученикам</button>'
+    }
     <div class="card" style="margin-top:10px">
       <h2>${escapeHtml(activeStudent.displayName)} — ${escapeHtml(activeAssignment.title)}</h2>
     </div>
@@ -1529,10 +1510,13 @@ function renderStudentPanel() {
       </div>
     </div>
   `;
-  document.getElementById("back-to-overview").onclick = () => {
-    activeStudent = null;
-    renderOverview();
-  };
+  const back = document.getElementById("back-to-overview");
+  if (back) {
+    back.onclick = () => {
+      activeStudent = null;
+      renderOverview();
+    };
+  }
   document.getElementById("save-grade-btn").onclick = saveGrade;
   // Covers the stepper arrows, the up/down keys and the scroll wheel - all of
   // them fire "input" after the value changes.
@@ -1897,10 +1881,10 @@ async function saveGrade() {
         score,
       }),
     });
-    // Grading is what clears a badge, so refresh both sidebar lists.
+    // Grading is what clears a badge, so whatever list the page shows has to
+    // be redrawn.
     await loadPendingReview();
-    await loadAssignments();
-    await loadStudentManage();
+    await onDataChanged();
     alert("Оценка сохранена");
   } catch (err) {
     alert("Не удалось сохранить оценку: " + err.message);
@@ -1975,45 +1959,6 @@ async function sendMessage() {
   }
 }
 
-// ---------- Student management ----------
-
-async function loadStudentManage() {
-  const { users } = await api("/api/auth/users");
-  const container = document.getElementById("student-manage");
-  container.innerHTML = "";
-  if (users.length === 0) {
-    container.innerHTML = '<p class="muted">Учеников пока нет.</p>';
-    return;
-  }
-
-  // Group students under their study group heading; ungrouped ones last.
-  const groups = new Map();
-  users.forEach((u) => {
-    const key = u.groupName || "";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(u);
-  });
-
-  groups.forEach((members, groupName) => {
-    const heading = document.createElement("div");
-    heading.className = "group-heading";
-    heading.textContent = groupName || "Без группы";
-    container.appendChild(heading);
-
-    members.sort(byStudentName);
-    members.forEach((u) => {
-      const div = document.createElement("div");
-      div.className =
-        "assignment-item" +
-        (activeProfile && activeProfile.id === u.id ? " active" : "");
-      div.innerHTML = `<div class="title">${escapeHtml(studentName(u))}${reviewBadge(pendingReview.byStudent[u.id], "student")}</div>
-        <div class="meta">${escapeHtml(u.username)}</div>`;
-      div.onclick = () => selectStudentProfile(u.id);
-      container.appendChild(div);
-    });
-  });
-}
-
 // ---------- Deadlines ----------
 
 function formatDeadline(deadline) {
@@ -2072,12 +2017,12 @@ async function selectStudentProfile(studentId) {
   activeStudent = null;
   activeProfile = { id: studentId };
   activeNotification = null;
-  await loadAssignments(); // clears the assignment highlight
-  await loadNotificationManage();
+  // The assignment list is what the profile's rows are matched against below.
+  await loadAssignments();
+  await onDataChanged();
 
   const { student, assignments: rows } = await api(`/api/auth/users/${studentId}`);
   activeProfile = student;
-  await loadStudentManage(); // re-render sidebar highlight
 
   const main = document.getElementById("main-content");
   main.innerHTML = `
@@ -2139,23 +2084,13 @@ async function selectStudentProfile(studentId) {
       }</td>
     `;
     // Jump straight to reviewing this student's work on that assignment.
-    tr.onclick = async () => {
-      const assignment = assignments.find((a) => a.id === r.assignmentId);
-      if (!assignment) return;
-      activeProfile = null;
-      activeAssignment = assignment;
-      await loadAssignments();
-      await loadStudentManage();
-      await selectStudent(student.id, studentName(student), r.maxScore);
+    tr.onclick = () => {
+      window.location.href = workPagePath(student.id, r.assignmentId, "student");
     };
     tbody.appendChild(tr);
   });
 }
 
-document.getElementById("logout-btn").onclick = async () => {
-  await api("/api/auth/logout", { method: "POST" });
-  window.location.href = "/login.html";
-};
 
 // ---------- Notifications ----------
 //
@@ -2164,42 +2099,6 @@ document.getElementById("logout-btn").onclick = async () => {
 
 let activeNotification = null; // the one open in the form, if any
 
-async function loadNotificationManage() {
-  const container = document.getElementById("notification-manage");
-  if (!container) return;
-  let list = [];
-  try {
-    ({ notifications: list } = await api("/api/notifications/all"));
-  } catch (err) {
-    container.innerHTML = `<p class="muted">Не удалось загрузить уведомления: ${escapeHtml(
-      err.message
-    )}</p>`;
-    return;
-  }
-
-  container.innerHTML = "";
-  if (list.length === 0) {
-    container.innerHTML = '<p class="muted">Уведомлений пока нет.</p>';
-    return;
-  }
-  list.forEach((item) => {
-    const div = document.createElement("div");
-    div.className =
-      "assignment-item" +
-      (activeNotification && activeNotification.id === item.id ? " active" : "") +
-      (item.active ? "" : " is-dismissed");
-    div.innerHTML = `<div class="title">${escapeHtml(item.body)}</div>
-      <div class="meta">${
-        item.active
-          ? "активно до " + escapeHtml(formatDeadline(item.activeUntil))
-          : "истекло " + escapeHtml(formatDeadline(item.activeUntil))
-      }</div>`;
-    div.title = item.body;
-    div.onclick = () => renderNotificationForm(item);
-    container.appendChild(div);
-  });
-}
-
 // One form for writing a new announcement and for editing an existing one.
 function renderNotificationForm(existing) {
   const editing = !!existing;
@@ -2207,9 +2106,7 @@ function renderNotificationForm(existing) {
   activeAssignment = null;
   activeStudent = null;
   activeProfile = null;
-  loadAssignments();
-  loadStudentManage();
-  loadNotificationManage();
+  onDataChanged();
 
   // Default: active until the end of tomorrow, which is the common case for
   // "read this before the next class".
@@ -2289,12 +2186,12 @@ async function saveNotification(existing) {
         method: "POST",
         body: payload,
       });
-      // Re-render first: the form becomes the edit form for what was just
-      // published, and only then does the message have somewhere to live.
-      renderNotificationForm(notification);
-      notificationMessage("Уведомление опубликовано.", "success");
+      // Published: from here on it is an existing notification, so it gets
+      // its own address rather than staying on the "new" page.
+      window.location.href = `/notifications?id=${notification.id}`;
+      return;
     }
-    await loadNotificationManage();
+    await onDataChanged();
     // The teacher's own banner bar shows what the students now see.
     await loadNotifications();
   } catch (err) {
@@ -2310,10 +2207,7 @@ async function deleteNotification(existing) {
   try {
     await api(`/api/notifications/${existing.id}`, { method: "DELETE" });
     activeNotification = null;
-    await loadNotificationManage();
-    await loadNotifications();
-    document.getElementById("main-content").innerHTML =
-      '<div class="card"><p class="muted">Уведомление удалено.</p></div>';
+    window.location.href = "/notifications";
   } catch (err) {
     notificationMessage("Не удалось удалить: " + err.message, "error");
   }
@@ -2326,25 +2220,6 @@ async function deleteNotification(existing) {
 
 let mirrorFiles = [];
 
-async function loadMirrorManage() {
-  const container = document.getElementById("mirror-manage");
-  if (!container) return;
-  try {
-    const data = await api("/api/mirror");
-    mirrorFiles = data.files || [];
-    container.innerHTML =
-      mirrorFiles.length === 0
-        ? '<p class="muted">Файлы не раздаются.</p>'
-        : `<p class="muted">Раздаётся файлов: ${mirrorFiles.length}. Адрес: <code>${escapeHtml(
-            data.baseUrl
-          )}</code></p>`;
-  } catch (err) {
-    container.innerHTML = `<p class="muted">Не удалось получить список: ${escapeHtml(
-      err.message
-    )}</p>`;
-  }
-}
-
 function mirrorMessage(text, kind) {
   const box = document.getElementById("mirror-message");
   if (box) box.innerHTML = `<div class="form-message ${kind}">${escapeHtml(text)}</div>`;
@@ -2355,9 +2230,7 @@ async function renderMirrorPanel() {
   activeStudent = null;
   activeProfile = null;
   activeNotification = null;
-  loadAssignments();
-  loadStudentManage();
-  loadNotificationManage();
+  onDataChanged();
 
   const main = document.getElementById("main-content");
   main.innerHTML = `
@@ -2385,6 +2258,15 @@ async function renderMirrorPanel() {
   `;
 
   document.getElementById("mirror-upload-btn").onclick = uploadMirrorFiles;
+
+  // What is being served right now. The panel asks for this itself: it used
+  // to arrive with the sidebar summary, which no longer exists.
+  try {
+    const data = await api("/api/mirror");
+    mirrorFiles = data.files || [];
+  } catch (err) {
+    mirrorMessage("Не удалось получить список файлов: " + err.message, "error");
+  }
   renderMirrorList();
   refreshMirrorStatus();
 }
@@ -2475,7 +2357,7 @@ async function uploadMirrorFiles() {
     mirrorFiles = result.all || [];
     input.value = "";
     renderMirrorList();
-    loadMirrorManage();
+    onDataChanged();
     mirrorMessage(`Файлов в раздаче: ${mirrorFiles.length}.`, "success");
   } catch (err) {
     mirrorMessage("Не удалось загрузить: " + err.message, "error");
@@ -2492,24 +2374,64 @@ async function deleteMirrorFile(filename) {
     });
     mirrorFiles = result.files || [];
     renderMirrorList();
-    loadMirrorManage();
+    onDataChanged();
   } catch (err) {
     mirrorMessage("Не удалось убрать: " + err.message, "error");
   }
 }
 
-document.getElementById("new-notification-btn").onclick = () =>
-  renderNotificationForm(null);
+// ---------- Page start-up ----------
+//
+// Each section of the teacher's side is its own page, and each one loads this
+// file plus a small script of its own. What they have in common - who is
+// logged in, the review badges, the announcement banners, the Log out button -
+// happens here.
 
-document.getElementById("mirror-open-btn").onclick = () => renderMirrorPanel();
+// A page with a list of its own installs a renderer here; shared code calls it
+// after anything that could change what that list shows (a new mark clears a
+// badge, a saved notification changes the tiles, and so on). Pages without a
+// list leave it alone.
+let onDataChanged = async () => {};
 
-(async function init() {
-  initEditor();
+async function initTeacherPage({ dataChanged, withEditor = false } = {}) {
+  if (dataChanged) onDataChanged = dataChanged;
+  if (withEditor) initEditor();
+
+  const logout = document.getElementById("logout-btn");
+  if (logout) {
+    logout.onclick = async () => {
+      await api("/api/auth/logout", { method: "POST" });
+      window.location.href = "/login.html";
+    };
+  }
+
   await loadMe();
   await loadPendingReview();
-  await loadAssignments();
-  await loadStudentManage();
-  await loadNotificationManage();
-  await loadMirrorManage();
-  await loadNotifications();
-})();
+  // The banners themselves live in ui.js, shared with the student's page.
+  if (typeof loadNotifications === "function") await loadNotifications();
+}
+
+// Where a page puts its own content. Every teacher page has this element.
+function mainContent() {
+  return document.getElementById("main-content");
+}
+
+// One student's work on one assignment has a page of its own. The pair has no
+// id in the database - a student who has not started has nothing to point at -
+// so the address names both halves. `from` only decides where "back" leads,
+// since the same page is reached from the assignment and from the student.
+function workPagePath(studentId, assignmentId, from) {
+  return `/student-assignment-work?student=${studentId}&assignment=${assignmentId}${
+    from ? `&from=${from}` : ""
+  }`;
+}
+
+// The link in the page heading. A section's list points back to the sections;
+// once one item of it is open, it should point back to that section's list
+// instead, so the way out is always one click away.
+function setBackLink(href, text) {
+  const link = document.querySelector(".page-head .back-link");
+  if (!link) return;
+  link.href = href;
+  link.textContent = text;
+}
