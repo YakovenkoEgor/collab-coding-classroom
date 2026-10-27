@@ -418,6 +418,159 @@ h3 { font-size: 14px; margin: 0 0 10px 0; color: var(--text-dim); text-transform
   flex: 0 0 auto;
 }
 
+/* The description is typed into a textarea, so the line breaks in it are the
+   teacher's own paragraphing. HTML would collapse them into one run of text;
+   pre-wrap keeps the breaks and still wraps long lines. */
+.assignment-description { white-space: pre-wrap; }
+
+/* An announcement in the student's sidebar list. The banner above the working
+   area is the place to read it in full; this is a preview, so the text keeps
+   its line breaks but is cut after a few lines. */
+.notification-item .title {
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* An assignment the student's study group was not given: visible, so they know
+   it exists, but there is nothing behind it to open. */
+.assignment-item.is-inactive,
+.summary-row.is-inactive {
+  cursor: default;
+  opacity: 0.55;
+}
+.assignment-item.is-inactive:hover { background: transparent; border-color: var(--border); }
+.summary-row.is-inactive:hover { background: transparent; }
+
+/* --- The student's dashboard --- */
+
+.profile-table td { border-bottom: none; padding: 4px 10px 4px 0; }
+.profile-table td:first-child { width: 160px; }
+
+.summary-table th, .summary-table td { padding: 8px 10px; }
+.summary-row { cursor: pointer; }
+.summary-row:hover { background: var(--bg-panel-raised); }
+.on-time { color: var(--accent); }
+.late { color: var(--error); }
+
+/* --- The teacher's pages: headings, tiles, roster --- */
+
+/* The working column on a teacher's page. `.single` on its own is the narrow
+   column the add-student form uses; these screens need room for tables and
+   for the code review panel. */
+.layout.single.wide .main { max-width: 1100px; }
+
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.page-head .back-link { margin: 0; }
+.page-title { margin: 0 0 14px; font-size: 20px; }
+
+/* Buttons side by side instead of the full-width stack .button-link is by
+   default (it was written for the sidebar). */
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.button-row .button-link,
+.page-head .button-link {
+  display: inline-flex;
+  align-items: center;
+  width: auto;
+  margin-top: 0;
+}
+.button-row button { margin: 0; }
+
+/* Square tiles: assignments and announcements. */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 14px;
+}
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* Square-ish without being rigid: the content decides the rest. */
+  aspect-ratio: 1 / 1;
+  min-height: 160px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--text);
+  text-decoration: none;
+  overflow: hidden;
+}
+.tile:hover { border-color: var(--accent-dim); background: var(--bg-panel-raised); }
+.tile-title {
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.3;
+  /* An announcement is typed into a textarea, so its line breaks are the
+     teacher's own; the clamp below keeps a long one from stretching the tile. */
+  white-space: pre-wrap;
+  /* Long titles are cut rather than allowed to push the tile out of shape. */
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.tile-meta { font-size: 12px; }
+.tile-foot { margin-top: auto; font-size: 12px; }
+.tile-foot.has-pending { color: var(--accent); font-weight: 600; }
+.tile.is-dismissed { opacity: 0.6; }
+
+/* The four section buttons on the dashboard. */
+.nav-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+}
+.nav-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 22px 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--text);
+  text-decoration: none;
+}
+.nav-tile:hover { border-color: var(--accent); background: var(--bg-panel-raised); }
+.nav-tile-title { font-size: 17px; font-weight: 600; }
+.nav-tile-note { font-size: 12px; color: var(--text-dim); }
+
+/* The roster. */
+.roster { width: 100%; }
+.roster th, .roster td { padding: 7px 8px; }
+.roster th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.roster th.sortable:hover { color: var(--text); }
+.sort-arrow { color: var(--text-dim); font-size: 11px; }
+.sort-arrow.active { color: var(--accent); }
+/* The filter row sits directly under the heading row's bottom border, so it
+   needs its own breathing room above - without it the inputs touch the line. */
+.roster .filter-row th { padding-top: 12px; padding-bottom: 10px; font-weight: 400; }
+.roster .filter-row input,
+.roster .filter-row select { width: 100%; font-size: 12px; padding: 4px 6px; }
+.roster-row { cursor: pointer; }
+.roster-row:hover { background: var(--bg-panel-raised); }
+.roster td.mono { font-family: var(--font-mono); font-size: 13px; }
+.roster .roster-actions { white-space: nowrap; text-align: right; }
+.roster .roster-actions button { margin: 0 0 0 4px; }
+button.small { padding: 4px 10px; font-size: 12px; }
+
 /* --- Per-group deadlines and maximum scores --- */
 .group-rules { margin-top: 6px; }
 .group-rules th, .group-rules td { padding: 6px 8px; }

@@ -1,5 +1,6 @@
 const express = require("express");
 const crypto = require("crypto");
+const fs = require("fs");
 const bcrypt = require("bcryptjs");
 const db = require("../db/database");
 const progsnap = require("../progsnap");
@@ -7,6 +8,7 @@ const { requireLogin, requireRole } = require("../middleware/auth");
 const { parseCsv, toCsv } = require("../csv");
 const { withDeadlineState } = require("../deadlines");
 const rules = require("../assignmentRules");
+const storage = require("../storage");
 
 const router = express.Router();
 
@@ -149,8 +151,22 @@ router.post("/logout", (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
 });
 
+// Who is logged in. The session carries enough to render the top bar; the
+// name, group and e-mail are read from the database, because a student's own
+// dashboard shows them and they can change while a session is open. The
+// stored password is deliberately not among them.
 router.get("/me", (req, res) => {
-  res.json({ user: req.session.user || null });
+  if (!req.session.user) return res.json({ user: null });
+
+  const row = db
+    .prepare(
+      `SELECT first_name AS firstName, last_name AS lastName,
+              group_name AS groupName, email
+       FROM users WHERE id = ?`
+    )
+    .get(req.session.user.id);
+
+  res.json({ user: { ...req.session.user, ...(row || {}) } });
 });
 
 // Teacher-only: create a new student (or teacher) account.
@@ -310,7 +326,7 @@ router.get("/users", requireLogin, requireRole("teacher"), (req, res) => {
     .prepare(
       `SELECT id, username, display_name AS displayName, role,
               first_name AS firstName, last_name AS lastName,
-              group_name AS groupName
+              group_name AS groupName, email
        FROM users WHERE role = 'student'
        ORDER BY group_name IS NULL, group_name, last_name, first_name`
     )
@@ -356,6 +372,130 @@ router.get("/users/export.csv", requireLogin, requireRole("teacher"), (req, res)
 
 // Teacher-only: one student's profile plus their standing in every
 // assignment - status, last activity and grade.
+// Teacher-only: change a student's details. Every field the platform keeps
+// about them can be edited here; a blank password field leaves the current
+// one alone, so changing a surname does not reset a login.
+router.put("/users/:id", requireLogin, requireRole("teacher"), (req, res) => {
+  const student = db
+    .prepare("SELECT * FROM users WHERE id = ? AND role = 'student'")
+    .get(req.params.id);
+  if (!student) return res.status(404).json({ error: "Ученик не найден" });
+
+  const login = (req.body.username || "").trim();
+  const first = (req.body.firstName || "").trim();
+  const last = (req.body.lastName || "").trim();
+  const group = (req.body.groupName || "").trim();
+  const email = (req.body.email || "").trim();
+  const password = typeof req.body.password === "string" ? req.body.password : "";
+
+  if (!login || !first || !last) {
+    return res.status(400).json({ error: "Логин, имя и фамилия обязательны" });
+  }
+  if (/\s/.test(login)) {
+    return res.status(400).json({ error: "Логин не должен содержать пробелов" });
+  }
+  if (password && password.length < 6) {
+    return res.status(400).json({ error: "Пароль должен быть не короче 6 символов" });
+  }
+
+  try {
+    db.prepare(
+      `UPDATE users
+       SET username = ?, first_name = ?, last_name = ?, display_name = ?,
+           group_name = ?, email = ?
+       WHERE id = ?`
+    ).run(login, first, last, `${first} ${last}`, group || null, email || null, student.id);
+
+    if (password) {
+      // initial_password is kept readable on purpose - it is what the teacher
+      // reads back out of the profile to hand to the student. Setting a new
+      // password replaces both, so the two never disagree.
+      db.prepare(
+        "UPDATE users SET password_hash = ?, initial_password = ? WHERE id = ?"
+      ).run(bcrypt.hashSync(password, 10), password, student.id);
+    }
+  } catch (err) {
+    if (String(err.message).includes("UNIQUE")) {
+      return res.status(409).json({ error: "Такой логин уже занят" });
+    }
+    throw err;
+  }
+
+  res.json({
+    user: db
+      .prepare(
+        `SELECT id, username, display_name AS displayName, role,
+                first_name AS firstName, last_name AS lastName,
+                group_name AS groupName, email,
+                initial_password AS initialPassword
+         FROM users WHERE id = ?`
+      )
+      .get(student.id),
+  });
+});
+
+// Teacher-only: delete a student and everything that belongs to them.
+//
+// This is the one destructive action in the app, so it takes the student's
+// own login as confirmation: a misplaced click cannot remove a term of work.
+// Children go before parents, the same order scripts/clear-classroom-data.js
+// uses, because foreign keys are on.
+router.delete("/users/:id", requireLogin, requireRole("teacher"), (req, res) => {
+  const student = db
+    .prepare("SELECT * FROM users WHERE id = ? AND role = 'student'")
+    .get(req.params.id);
+  if (!student) return res.status(404).json({ error: "Ученик не найден" });
+
+  if ((req.body.confirmUsername || "").trim() !== student.username) {
+    return res.status(400).json({
+      error: `Для удаления подтвердите логин ученика: ${student.username}`,
+    });
+  }
+
+  // Files on disk are removed after the transaction commits - a failed delete
+  // must not leave the database pointing at files that are already gone.
+  const uploads = db
+    .prepare("SELECT stored_name AS storedName FROM submission_uploads WHERE student_id = ?")
+    .all(student.id);
+
+  const remove = db.transaction(() => {
+    db.prepare(
+      `DELETE FROM messages
+       WHERE discussion_id IN (SELECT id FROM discussions WHERE student_id = ?)`
+    ).run(student.id);
+    db.prepare("DELETE FROM discussions WHERE student_id = ?").run(student.id);
+    db.prepare(
+      `DELETE FROM test_answers
+       WHERE attempt_id IN (SELECT id FROM test_attempts WHERE student_id = ?)`
+    ).run(student.id);
+    db.prepare("DELETE FROM test_attempts WHERE student_id = ?").run(student.id);
+    db.prepare(
+      `DELETE FROM submission_files
+       WHERE submission_id IN (SELECT id FROM submissions WHERE student_id = ?)`
+    ).run(student.id);
+    db.prepare("DELETE FROM submissions WHERE student_id = ?").run(student.id);
+    db.prepare("DELETE FROM submission_uploads WHERE student_id = ?").run(student.id);
+    db.prepare("DELETE FROM grades WHERE student_id = ?").run(student.id);
+    // Their process data goes with them. The code snapshots it pointed at are
+    // content-addressed and shared, so they stay; an export only ever carries
+    // the ones its own events reference.
+    db.prepare("DELETE FROM events WHERE subject_id = ?").run(student.id);
+    db.prepare("DELETE FROM users WHERE id = ?").run(student.id);
+  });
+  remove();
+
+  let removedFiles = 0;
+  for (const upload of uploads) {
+    const full = storage.pathForStoredName(upload.storedName);
+    if (full && fs.existsSync(full)) {
+      fs.rmSync(full, { force: true });
+      removedFiles++;
+    }
+  }
+
+  res.json({ ok: true, removedFiles });
+});
+
 router.get("/users/:id", requireLogin, requireRole("teacher"), (req, res) => {
   const student = db
     .prepare(
@@ -370,11 +510,14 @@ router.get("/users/:id", requireLogin, requireRole("teacher"), (req, res) => {
 
   const assignments = db
     .prepare(
-      // The deadline and top mark are this student's group's, falling back to
-      // the assignment's own (see assignmentRules.js).
+      // The deadline and top mark are this student's group's and nothing
+      // else's; neither set means the assignment was not given to that group
+      // (see assignmentRules.js).
       `SELECT a.id AS assignmentId, a.title, a.archived,
-              COALESCE(r.deadline, a.deadline) AS deadline,
-              COALESCE(r.max_score, a.max_score) AS maxScore,
+              r.deadline AS deadline,
+              r.max_score AS maxScore,
+              CASE WHEN r.deadline IS NOT NULL OR r.max_score IS NOT NULL
+                   THEN 1 ELSE 0 END AS isActive,
               s.version_number AS latestVersion, s.status,
               s.created_at AS lastActivity,
               g.score, g.feedback,

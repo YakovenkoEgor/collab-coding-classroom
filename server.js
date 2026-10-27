@@ -14,6 +14,7 @@ const notificationRoutes = require("./routes/notifications");
 const testRoutes = require("./routes/tests");
 const mirrorRoutes = require("./routes/mirror");
 const progsnapRoutes = require("./routes/progsnap");
+const maintenanceRoutes = require("./routes/maintenance");
 
 const app = express();
 
@@ -82,8 +83,58 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/tests", testRoutes);
 app.use("/api/mirror", mirrorRoutes);
 app.use("/api/progsnap", progsnapRoutes);
+app.use("/api/maintenance", maintenanceRoutes);
 
 app.use(express.static(path.join(__dirname, "public")));
+
+// ---------------------------------------------------------------------
+// The teacher's pages
+//
+// Each section is its own page at its own path, so a link to an assignment or
+// a student can be bookmarked, shared and opened in a second tab. The files
+// themselves live in public/teacher/; these routes are what gives them clean
+// paths without an .html on the end.
+//
+// The pages are only shells - every one of them asks /api/auth/me on load and
+// sends anyone who is not a teacher back to the login screen, and the data
+// behind them is guarded by the API. Serving the shell itself needs no check.
+// ---------------------------------------------------------------------
+const TEACHER_PAGES = {
+  "/teacher/dashboard": "dashboard.html",
+  "/assignments": "assignments.html",
+  "/assignments/new": "assignment-new.html",
+  "/students": "students.html",
+  "/students/new": "students-new.html",
+  "/notifications": "notifications.html",
+  "/notifications/new": "notification-new.html",
+  "/mirror": "mirror.html",
+  // One student's work on one assignment, reachable from either side.
+  "/student-assignment-work": "student-work.html",
+};
+
+for (const [route, file] of Object.entries(TEACHER_PAGES)) {
+  app.get(route, (req, res) => {
+    res.sendFile(path.join(__dirname, "public", "teacher", file));
+  });
+}
+
+// The student's side: the dashboard and one assignment's working screen.
+const STUDENT_PAGES = {
+  "/student/dashboard": "dashboard.html",
+  "/student/work": "work.html",
+};
+
+for (const [route, file] of Object.entries(STUDENT_PAGES)) {
+  app.get(route, (req, res) => {
+    res.sendFile(path.join(__dirname, "public", "student", file));
+  });
+}
+
+// Where the old single-page teacher screen used to be.
+app.get("/teacher.html", (req, res) => res.redirect("/teacher/dashboard"));
+app.get("/teacher", (req, res) => res.redirect("/teacher/dashboard"));
+app.get("/new-student.html", (req, res) => res.redirect("/students/new"));
+app.get("/student.html", (req, res) => res.redirect("/student/dashboard"));
 
 // Fallback: send login page for any unmatched route (simple SPA-ish behavior)
 app.get("*", (req, res) => {

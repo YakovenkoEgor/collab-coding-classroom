@@ -139,14 +139,16 @@ router.get("/", requireLogin, (req, res) => {
     return res.json({ assignments: rows });
   }
 
-  // The deadline and the top mark are the ones this student's study group
-  // gets; they are aliased so a.* keeps its own raw columns intact, and then
-  // put in place of them below.
+  // The deadline and the top mark come from this student's study group, and
+  // nowhere else. A group with neither has not been given the assignment:
+  // isActive says so, and the student's list shows it greyed out.
   const rows = db
     .prepare(
       `SELECT a.*, ${HAS_SUBMITTED_SQL} AS hasSubmitted,
-              COALESCE(r.deadline, a.deadline) AS groupDeadline,
-              COALESCE(r.max_score, a.max_score) AS groupMaxScore
+              r.deadline AS groupDeadline,
+              r.max_score AS groupMaxScore,
+              CASE WHEN r.deadline IS NOT NULL OR r.max_score IS NOT NULL
+                   THEN 1 ELSE 0 END AS isActive
        FROM assignments a ${rules.RULE_JOIN_FOR_STUDENT}
        ${where} ORDER BY a.created_at DESC`
     )
@@ -165,7 +167,11 @@ router.get("/", requireLogin, (req, res) => {
         ...row,
         deadline: row.groupDeadline,
         max_score: row.groupMaxScore,
+        isActive: !!row.isActive,
       };
+      // An assignment nobody has to do has no deadline state to speak of:
+      // it is never "due soon" and never overdue.
+      if (!assignment.isActive) return { ...assignment, deadlineState: null };
       if (row.type !== "test") return withDeadlineState(assignment);
       // A test also carries the window it can be solved in, so the student's
       // list can say "not open yet" / "closed" without a second request.
@@ -233,6 +239,81 @@ router.get("/review/pending", requireLogin, requireRole("teacher"), (req, res) =
 // Registered before "/:id" so "groups" isn't read as an assignment id.
 router.get("/groups", requireLogin, requireRole("teacher"), (req, res) => {
   res.json({ groups: rules.knownGroups(null) });
+});
+
+// A student's own results, one row per assignment: what it was, when it was
+// due, whether they handed it in on time, and what it earned. This is what
+// their dashboard shows, and it is deliberately their own only - a student
+// cannot ask for anybody else's.
+//
+// Registered before "/:id" so "summary" is not read as an assignment id.
+router.get("/summary/me", requireLogin, requireRole("student"), (req, res) => {
+  const studentId = req.session.user.id;
+
+  const rows = db
+    .prepare(
+      `SELECT a.id, a.title, a.type, a.test_kind AS testKind,
+              -- Both come from this student's group alone; neither of them set
+              -- means the assignment was not given to that group.
+              r.deadline AS deadline,
+              r.max_score AS maxScore,
+              CASE WHEN r.deadline IS NOT NULL OR r.max_score IS NOT NULL
+                   THEN 1 ELSE 0 END AS isActive,
+              g.score,
+              -- The hand-in that counts is the last one: that is the version
+              -- the teacher marks, so it is the one the deadline is about.
+              (SELECT MAX(s.created_at) FROM submissions s
+                WHERE s.assignment_id = a.id AND s.student_id = ?
+                  AND s.status = 'submitted') AS submittedAt,
+              (SELECT MAX(t.submitted_at) FROM test_attempts t
+                WHERE t.assignment_id = a.id AND t.student_id = ?
+                  AND t.submitted_at IS NOT NULL) AS testSubmittedAt,
+              (SELECT COUNT(*) FROM submission_uploads u
+                WHERE u.assignment_id = a.id AND u.student_id = ?) AS uploadCount,
+              (SELECT COUNT(*) FROM submissions s
+                WHERE s.assignment_id = a.id AND s.student_id = ?) AS versionCount
+       FROM assignments a
+       ${rules.RULE_JOIN_FOR_STUDENT}
+       LEFT JOIN grades g ON g.assignment_id = a.id AND g.student_id = ?
+       WHERE a.archived = 0
+       ORDER BY a.created_at`
+    )
+    .all(studentId, studentId, studentId, studentId, studentId, studentId);
+
+  const summary = rows.map((row) => {
+    // A test is handed in by submitting an attempt; free-form work is handed
+    // in by attaching files, and has no version to time-stamp.
+    const handedInAt =
+      row.type === "test" ? row.testSubmittedAt : row.submittedAt || null;
+    const handedIn =
+      row.type === "freeform" ? row.uploadCount > 0 : !!handedInAt;
+
+    let timeliness = null;
+    if (handedIn && row.deadline && handedInAt) {
+      // Stored times are UTC; a deadline is local wall-clock time, which is
+      // how it was typed and how it is shown.
+      const due = new Date(String(row.deadline).replace(" ", "T"));
+      const at = new Date(`${String(handedInAt).replace(" ", "T")}Z`);
+      timeliness = at.getTime() <= due.getTime() ? "onTime" : "late";
+    }
+
+    return {
+      assignmentId: row.id,
+      title: row.title,
+      type: row.type,
+      testKind: row.testKind,
+      isActive: !!row.isActive,
+      deadline: row.deadline,
+      maxScore: row.maxScore,
+      score: row.score === undefined ? null : row.score,
+      handedIn,
+      handedInAt,
+      timeliness,
+      started: row.versionCount > 0 || row.uploadCount > 0 || !!row.testSubmittedAt,
+    };
+  });
+
+  res.json({ summary });
 });
 
 router.get("/:id", requireLogin, (req, res) => {
@@ -369,17 +450,17 @@ function readGroupRules(body) {
   return parsed;
 }
 
-// Marks already given that the new limits would put out of range. Checked per
-// group, because each group can have a top mark of its own.
-function gradesAboveNewMax(assignmentId, defaultMax, groupRules) {
+// Marks already given that the new limits would put out of range. A top mark
+// exists per group and nowhere else, so a group whose new rule carries no
+// maximum has nothing to compare against and is left alone.
+function gradesAboveNewMax(assignmentId, groupRules) {
   const maxFor = (groupName) => {
     const rule = groupRules.find((r) => r.groupName === groupName);
-    return rule && rule.maxScore !== null ? rule.maxScore : defaultMax;
+    return rule && rule.maxScore !== null ? rule.maxScore : null;
   };
 
   return db
     .prepare(
-      // '' stands for "no group" - those students follow the assignment.
       `SELECT COALESCE(u.group_name, '') AS groupName,
               MAX(g.score) AS topScore, COUNT(*) AS graded
        FROM grades g JOIN users u ON u.id = g.student_id
@@ -387,7 +468,10 @@ function gradesAboveNewMax(assignmentId, defaultMax, groupRules) {
        GROUP BY COALESCE(u.group_name, '')`
     )
     .all(assignmentId)
-    .filter((row) => row.topScore > maxFor(row.groupName))
+    .filter((row) => {
+      const max = maxFor(row.groupName);
+      return max !== null && row.topScore > max;
+    })
     .map((row) => ({
       groupName: row.groupName,
       topScore: row.topScore,
@@ -416,26 +500,16 @@ function readTestSpec(body) {
 // Teacher-only: create an assignment, optionally with handout files.
 // files: [{ name, data }] where data is base64 (a data: URL is also accepted).
 router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
-  const { title, description, files, deadline } = req.body;
+  const { title, description, files } = req.body;
   if (!title) return res.status(400).json({ error: "Укажите название задания" });
 
-  let dueAt;
-  try {
-    dueAt = normalizeDeadline(deadline);
-  } catch (err) {
-    if (err instanceof DeadlineError) return res.status(400).json({ error: err.message });
-    throw err;
-  }
-
   let assignmentType;
-  let maxScore;
   let groupRules;
   let networkAccess = 0;
   let starter = null;
   let test = null;
   try {
     assignmentType = normalizeType(req.body.type);
-    maxScore = normalizeMaxScore(req.body.maxScore);
     groupRules = readGroupRules(req.body);
     networkAccess = readNetworkAccess(req.body.networkAccess, assignmentType);
     // Only code assignments carry a Java starter project. A text assignment's
@@ -477,10 +551,14 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
     const create = db.transaction(() => {
       const info = db
         .prepare(
+          // deadline and max_score are not in this list on purpose: both now
+          // live per study group, in assignment_group_rules. The columns stay
+          // on the table only so old rows keep their history; nothing reads
+          // them (see assignmentRules.js).
           `INSERT INTO assignments
-             (title, description, starter_code, created_by, deadline, type, max_score,
+             (title, description, starter_code, created_by, type,
               test_kind, available_from, time_limit_minutes, network_access)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         // starter_code mirrors the entry file for the older single-file paths.
         .run(
@@ -488,9 +566,7 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
           description || "",
           starterContent,
           req.session.user.id,
-          dueAt,
           assignmentType,
-          maxScore,
           test ? test.testKind : null,
           test ? test.availableFrom : null,
           test ? test.timeLimitMinutes : null,
@@ -558,24 +634,17 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
     .get(req.params.id);
   if (!assignment) return res.status(404).json({ error: "Задание не найдено" });
 
-  const { title, description, files, removeFileIds, deadline } = req.body;
+  const { title, description, files, removeFileIds } = req.body;
   const newTitle = (title || "").trim();
   if (!newTitle) return res.status(400).json({ error: "Укажите название задания" });
 
-  let dueAt;
   let starter = null;
   let assignmentType;
-  let maxScore;
   let groupRules;
   let networkAccess = 0;
   let test = null;
   try {
-    dueAt = normalizeDeadline(deadline);
     assignmentType = req.body.type === undefined ? assignment.type : normalizeType(req.body.type);
-    maxScore =
-      req.body.maxScore === undefined
-        ? assignment.max_score
-        : normalizeMaxScore(req.body.maxScore);
     // Leaving groupRules out of the request keeps the current exceptions;
     // sending an empty list clears them.
     groupRules =
@@ -618,7 +687,7 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
   // Lowering a top mark below marks already given would leave grades that the
   // grade box itself would refuse to accept. Say so instead of silently
   // creating that state - per group, since each can have its own maximum.
-  const conflicts = gradesAboveNewMax(assignment.id, maxScore, groupRules);
+  const conflicts = gradesAboveNewMax(assignment.id, groupRules);
   if (conflicts.length > 0) {
     const where = conflicts
       .map(
@@ -682,18 +751,17 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
 
     const update = db.transaction(() => {
       db.prepare(
+        // deadline and max_score are left alone: they live per group now.
         `UPDATE assignments
-         SET title = ?, description = ?, starter_code = ?, deadline = ?, type = ?,
-             max_score = ?, test_kind = ?, available_from = ?, time_limit_minutes = ?,
+         SET title = ?, description = ?, starter_code = ?, type = ?,
+             test_kind = ?, available_from = ?, time_limit_minutes = ?,
              network_access = ?
          WHERE id = ?`
       ).run(
         newTitle,
         description || "",
         starterContent,
-        dueAt,
         assignmentType,
-        maxScore,
         test ? test.testKind : null,
         test ? test.availableFrom : null,
         test ? test.timeLimitMinutes : null,
@@ -866,9 +934,12 @@ router.get(
       SELECT u.id AS studentId, u.display_name AS displayName,
              u.first_name AS firstName, u.last_name AS lastName,
              u.group_name AS groupName, a.archived,
-             -- The deadline and top mark of this student's own group.
-             COALESCE(r.deadline, a.deadline) AS deadline,
-             COALESCE(r.max_score, a.max_score) AS maxScore,
+             -- The deadline and top mark of this student's own group; neither
+             -- set means the assignment was not given to that group.
+             r.deadline AS deadline,
+             r.max_score AS maxScore,
+             CASE WHEN r.deadline IS NOT NULL OR r.max_score IS NOT NULL
+                  THEN 1 ELSE 0 END AS isActive,
              s.version_number AS latestVersion, s.status, s.created_at AS lastActivity,
              g.score, g.feedback,
              (SELECT COUNT(*) FROM submission_uploads up
@@ -948,6 +1019,8 @@ router.get(
 
         return withDeadlineState({
           ...row,
+          // SQLite has no booleans; the screens want one.
+          isActive: !!row.isActive,
           test,
           lastActivity: isTest
             ? (test && (test.submittedAt || test.startedAt)) || null

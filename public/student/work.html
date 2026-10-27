@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Java Classroom — Задание</title>
+<link rel="stylesheet" href="/css/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.47.0/min/vs/loader.min.js"></script>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span> Java Classroom</div>
+    <div class="user-info">
+      <span id="whoami"></span>
+      <button class="secondary" id="logout-btn">Выйти</button>
+    </div>
+  </div>
+
+  <!-- Active announcements, between the top bar and the working area. -->
+  <div id="notification-bar"></div>
+
+  <div class="layout">
+    <div class="sidebar">
+      <div class="sidebar-head">
+        <h3>Задания</h3>
+        <button class="sidebar-toggle" id="sidebar-toggle" title="Свернуть панель"
+                aria-controls="assignment-list" aria-expanded="true">‹</button>
+      </div>
+      <div id="assignment-list"></div>
+
+      <hr style="border-color: var(--border); margin: 16px 0">
+      <h3>Уведомления</h3>
+      <div id="notification-list"></div>
+    </div>
+
+    <div class="main">
+      <!-- The sidebar is unchanged, so the way back to the summary lives here. -->
+      <a class="back-link" href="/student/dashboard">← Моя успеваемость</a>
+      <div id="main-content">
+        <div class="card"><p class="muted">Загрузка задания…</p></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/ui.js"></script>
+  <script src="/js/student-core.js"></script>
+  <script src="/js/pages/student-work.js"></script>
+</body>
+</html>

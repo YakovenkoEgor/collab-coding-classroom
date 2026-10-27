@@ -17,6 +17,11 @@ const rules = require("../assignmentRules");
 
 const router = express.Router();
 
+// What a student is told when they reach an assignment their study group was
+// never given. They cannot get here from their own list - the entry is not
+// clickable - so this is for a direct request.
+const NOT_GIVEN_MESSAGE = "Это задание не требует выполнения вашей группой";
+
 // The assignment, with the deadline that applies to one student - a study
 // group may have its own, and for a test that date is the end of the window.
 function testAssignment(assignmentId, studentId) {
@@ -26,8 +31,10 @@ function testAssignment(assignmentId, studentId) {
               a.test_kind AS testKind,
               a.available_from AS availableFrom,
               a.time_limit_minutes AS timeLimitMinutes,
-              COALESCE(r.deadline, a.deadline) AS deadline,
-              COALESCE(r.max_score, a.max_score) AS maxScore
+              r.deadline AS deadline,
+              r.max_score AS maxScore,
+              CASE WHEN r.deadline IS NOT NULL OR r.max_score IS NOT NULL
+                   THEN 1 ELSE 0 END AS isActive
        FROM assignments a ${rules.RULE_JOIN_FOR_STUDENT}
        WHERE a.id = ?`
     )
@@ -99,6 +106,10 @@ router.post(
     const studentId = req.session.user.id;
     const assignment = testAssignment(req.params.assignmentId, studentId);
     if (!assignment) return res.status(404).json({ error: "Это задание не является тестом" });
+
+    if (!assignment.isActive) {
+      return res.status(409).json({ error: NOT_GIVEN_MESSAGE });
+    }
 
     const availability = testing.availabilityOf(assignment);
     if (!availability.open) {
