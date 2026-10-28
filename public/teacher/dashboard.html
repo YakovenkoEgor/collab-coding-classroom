@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Java Classroom — Преподаватель</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span> Java Classroom</div>
+    <div class="user-info">
+      <span id="whoami"></span>
+      <button class="secondary" id="logout-btn">Выйти</button>
+    </div>
+  </div>
+
+  <!-- Active announcements, between the top bar and the working area. -->
+  <div id="notification-bar"></div>
+
+  <div class="layout single wide">
+    <div class="main" id="main-content">
+      <h2 class="page-title">Разделы</h2>
+      <div class="nav-tiles">
+        <a class="nav-tile" href="/assignments">
+          <span class="nav-tile-title">Задания</span>
+          <span class="nav-tile-note" id="nav-assignments-note">&nbsp;</span>
+        </a>
+        <a class="nav-tile" href="/students">
+          <span class="nav-tile-title">Обучающиеся</span>
+          <span class="nav-tile-note" id="nav-students-note">&nbsp;</span>
+        </a>
+        <a class="nav-tile" href="/notifications">
+          <span class="nav-tile-title">Уведомления</span>
+          <span class="nav-tile-note" id="nav-notifications-note">&nbsp;</span>
+        </a>
+        <a class="nav-tile" href="/mirror">
+          <span class="nav-tile-title">Файлы по сети</span>
+          <span class="nav-tile-note" id="nav-mirror-note">&nbsp;</span>
+        </a>
+      </div>
+
+      <h2 class="page-title" style="margin-top:28px">Выгрузки</h2>
+      <div class="card">
+        <p class="muted" style="font-size:13px; margin-top:0">
+          Файлы складываются на сервере, рядом с проектом: резервные копии — в
+          <code>backups/</code>, данные процесса — в <code>exports/</code>.
+        </p>
+        <div class="button-row">
+          <a class="button-link secondary" href="/api/grades/export.csv" download>
+            ↓ Оценки (CSV)
+          </a>
+          <a class="button-link secondary" href="/api/auth/users/export.csv" download
+             title="Имя, фамилия, логин и пароль каждого ученика. Файл содержит пароли — храните его как документ с персональными данными.">
+            ↓ Логины учеников (CSV)
+          </a>
+          <button class="secondary" id="backup-btn">Сделать резервную копию базы</button>
+          <button class="secondary" id="progsnap-btn">Выгрузить данные процесса (ProgSnap2)</button>
+        </div>
+        <div id="maintenance-result"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/ui.js"></script>
+  <script src="/js/teacher-core.js"></script>
+  <script src="/js/pages/dashboard.js"></script>
+</body>
+</html>

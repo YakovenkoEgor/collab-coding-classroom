@@ -116,15 +116,104 @@ The old `-wal`/`-shm` files have to go: they belong to the database you
 are replacing, and leaving them next to a restored file is how a
 database gets corrupted.
 
+## The teacher's pages
+
+Each section is its own page at its own path, so a link to an assignment or a
+student can be bookmarked, shared, and opened in a second tab:
+
+| Path | What it is |
+| --- | --- |
+| `/teacher/dashboard` | where logging in lands: the four sections, the CSV downloads, and the two buttons that run `backup-db.js` and `export-progsnap2.js` on the server |
+| `/assignments` | assignments as tiles - title, type, when it was created, how much of it is waiting to be marked |
+| `/assignments?id=N` | one assignment: the roster, reviewing a student's work, the mark, the discussion, editing and deleting |
+| `/assignments/new` | the creation form |
+| `/students` | the roster as a list - surname, name, login, group - with a filter per column, sortable headings, and Изменить / × on every row |
+| `/students?id=N` | one student: everything they have done, with a row per assignment |
+| `/students?id=N&edit=1` | their details: surname, name, login, group, e-mail, and a new password when one is wanted |
+| `/students/new` | adding one student, or importing a class from CSV |
+| `/notifications` | announcements as tiles |
+| `/notifications?id=N` | editing or deleting one |
+| `/notifications/new` | writing one |
+| `/mirror` | the files the sandbox can download (see *The file mirror* below) |
+| `/student-assignment-work?student=S&assignment=A` | one student's work on one assignment: versions, the code, the mark, the discussion. Reached from the assignment's roster and from the student's own list, and `from` only decides where the back link goes |
+
+A student-and-assignment pair has no id of its own in the database - a student
+who has not started has nothing to point at - so that last address names both
+halves rather than inventing a composite id to decode.
+
+
+### The student's pages
+
+| Path | What it is |
+| --- | --- |
+| `/student/dashboard` | where logging in lands: their own details, and a row per assignment - type, deadline, status, handed in on time or late, and the mark |
+| `/student/work?id=N` | one assignment: the editor (or the answer box, the attachments, or the test), its versions, the mark and the discussion |
+
+The sidebar - assignments and announcements - is on both, unchanged.
+`public/js/student-core.js` holds the working screen and everything around it;
+`public/js/pages/student-dashboard.js` and `student-work.js` only choose what
+to show. Whether a hand-in counts as on time is decided by the *last* submitted
+version, since that is the one the teacher marks.
+
+`public/js/teacher-core.js` holds what the pages have in common - the review
+screen, the assignment form, the student profile, the announcement form, the
+mirror panel - and each page adds a small script of its own under
+`public/js/pages/`. A page that shows a list hands `initTeacherPage` a
+redraw function, which the shared code calls after anything that could change
+what the list shows (a mark clears a review badge, for instance).
+
+Deleting a student removes their work, marks, discussions, test attempts and
+process-log events along with the account, and asks for their login typed out
+as confirmation.
+
+## Deadlines and top marks
+
+Both exist **per study group only** - an assignment has none of its own. The
+assignment form carries one row per group, each with a deadline and a maximum
+score, either of which may be left empty.
+
+A group with **neither** set has simply not been given the assignment: its
+students see it in their list, greyed out and not clickable, with
+*не требует выполнения* where the deadline would be. The server agrees - a
+request to submit, attach files, or start the test is refused the same way, so
+a typed address gets nowhere. The teacher's roster says the same thing in the
+status column rather than calling it "не начато", which would read as a
+reproach.
+
+Consequences worth knowing:
+
+- **A student with no study group gets nothing.** There is no rule that could
+  apply to them, so every assignment reads *не требует выполнения* until they
+  are given a group (which the roster's Изменить button does).
+- **A deadline without a maximum score** leaves the assignment active but
+  unmarkable: the grade panel says so, and `PUT /api/grades/...` refuses.
+  Marks already given stay as they are.
+- **Withdrawing an assignment** from a group does not delete marks already
+  given. A student keeps seeing the mark on their dashboard; it drops out of
+  the "баллов: N из M" total, because the scale it was marked on is gone.
+- **Upgrading an existing install** does not withdraw anything: on first start
+  after this change, every study group gets a rule carrying the assignment's
+  old deadline and top mark (`[db] migrated deadlines and top marks to
+  per-group rules`). It runs once, so a group created later starts out without
+  a rule - which is exactly how "not given to them" is expressed.
+
+`assignments.deadline` and `assignments.max_score` are still on the table so
+old rows keep their history, but nothing reads them any more; everything goes
+through `assignmentRules.js`.
+
 ## Using the app
 
 ### As the teacher
 
-1. Log in, click **+ New assignment**, give it a title, description, and
-   optional starter code.
-2. Click **+ Add student** in the sidebar to create accounts — give each
-   student their username/password directly (there's no self-signup, by
-   design, so you control who's in your class).
+1. Log in - this lands on `/teacher/dashboard`, the four sections. Open
+   **Задания** and click **+ Новое задание**: a title, a description, and
+   optional starter code. The table *Сроки и баллы по группам* is what
+   actually hands the assignment out - a group left blank there does not get
+   it (see *Deadlines and top marks* above).
+2. **Обучающиеся** is the roster: add or import accounts there, filter and
+   sort by any column, change a student's details, or remove them. Give each
+   student their username and password directly - there is no self-signup, by
+   design, so you control who is in your class.
 3. Click an assignment to see every student's latest submission status.
 4. Click a student's row to see their full version history, view any
    version's code and output, leave a grade, and hold a discussion thread.
@@ -139,11 +228,11 @@ database gets corrupted.
    set for the assignment. Once a student has started, the questions are
    frozen; the dates, the time limit and the maximum can still change.
    Surveys never appear in the gradebook export.
-6. **Notifications** in the sidebar: write a class-wide announcement and
+6. **Уведомления**: write a class-wide announcement and
    say how long it stays up. Every student sees it as a banner above the
    working area until then; expired ones stay in your list so you can see
    what was announced.
-7. **Network files** in the sidebar: upload the text files a program should
+7. **Файлы по сети**: upload the text files a program should
    be able to download, and hand out the URLs it prints next to each one
    (`http://files.local/<name>`). Then tick **Разрешить скачивание файлов
    по сети** on the assignment itself — that switch, and nothing else, is
@@ -151,7 +240,8 @@ database gets corrupted.
 
 ### As a student
 
-1. Log in, pick an assignment from the sidebar.
+1. Log in - this lands on `/student/dashboard`: your own details and how you
+   are doing on every assignment. Pick one there or from the sidebar.
 2. Write code in the editor (must have a `public class Main`), click
    **Run** to compile and test it (doesn't save anything).
 3. **Save draft** to save your progress as a version without marking it
@@ -174,7 +264,7 @@ database gets corrupted.
    each.
 7. Announcements from the teacher appear as banners above the working
    area. Closing one hides it for the rest of your session; the
-   **Notifications** list in the sidebar still holds everything active,
+   **Уведомления** list in the sidebar still holds everything active,
    and clicking an entry brings its banner back.
 8. Use the discussion box to ask questions. Whichever version is currently
    loaded in your editor gets linked to your next message automatically,
@@ -380,12 +470,16 @@ java-classroom/
 │   ├── notifications.js     # Class-wide announcements
 │   ├── mirror.js            # Files served to the sandbox over HTTP
 │   ├── progsnap.js          # Edit capture config + the editor's reports
+│   ├── maintenance.js       # Backup / ProgSnap2 export from the dashboard
 │   ├── tests.js             # Sitting a test, reading the result
 │   └── grades.js            # Grading
 ├── public/
 │   ├── login.html / js/login.js
-│   ├── student.html / js/student.js
-│   ├── teacher.html / js/teacher.js
+│   ├── teacher/             # One page per section (see below)
+│   ├── student/             # The dashboard and one assignment's screen
+│   ├── js/teacher-core.js   # Everything the teacher's pages share
+│   ├── js/student-core.js   # Everything the student's pages share
+│   ├── js/pages/            # One small script per page
 │   └── css/style.css
 └── scripts/
     ├── seed.js              # Creates initial accounts

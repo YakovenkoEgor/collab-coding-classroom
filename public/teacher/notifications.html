@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Java Classroom — Уведомления</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span> Java Classroom</div>
+    <div class="user-info">
+      <span id="whoami"></span>
+      <button class="secondary" id="logout-btn">Выйти</button>
+    </div>
+  </div>
+
+  <div id="notification-bar"></div>
+
+  <div class="layout single wide">
+    <div class="main">
+      <div class="page-head">
+        <a class="back-link" href="/teacher/dashboard">← Разделы</a>
+        <a class="button-link" href="/notifications/new">+ Новое уведомление</a>
+      </div>
+      <div id="main-content"></div>
+    </div>
+  </div>
+
+  <script src="/js/ui.js"></script>
+  <script src="/js/teacher-core.js"></script>
+  <script src="/js/pages/notifications.js"></script>
+</body>
+</html>

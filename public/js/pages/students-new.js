@@ -80,7 +80,7 @@ async function createStudent(stayOnPage) {
       );
       clearForm(true);
     } else {
-      window.location.href = "/teacher.html";
+      window.location.href = "/students";
     }
   } catch (err) {
     showMessage("Не удалось создать ученика: " + err.message, "error");
@@ -99,7 +99,7 @@ function escapeHtml(str) {
   return d.innerHTML;
 }
 
-// Students are listed surname first, as in teacher.js.
+// Students are listed surname first, as everywhere else.
 function studentName(row) {
   const last = (row.lastName || "").trim();
   const first = (row.firstName || "").trim();

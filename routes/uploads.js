@@ -8,6 +8,7 @@ const express = require("express");
 const db = require("../db/database");
 const { requireLogin, requireRole } = require("../middleware/auth");
 const storage = require("../storage");
+const rules = require("../assignmentRules");
 
 const router = express.Router();
 
@@ -62,6 +63,12 @@ router.post(
   requireLogin,
   requireRole("student"),
   (req, res) => {
+    // Their study group was never given this assignment (see assignmentRules).
+    if (!rules.isActiveFor(req.params.assignmentId, req.session.user.id)) {
+      return res.status(409).json({
+        error: "Это задание не требует выполнения вашей группой",
+      });
+    }
     const check = requireFreeform(req.params.assignmentId);
     if (check.error) return res.status(check.status).json({ error: check.error });
 
