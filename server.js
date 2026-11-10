@@ -15,6 +15,7 @@ const testRoutes = require("./routes/tests");
 const mirrorRoutes = require("./routes/mirror");
 const progsnapRoutes = require("./routes/progsnap");
 const maintenanceRoutes = require("./routes/maintenance");
+const checkRoutes = require("./routes/checks");
 
 const app = express();
 
@@ -84,6 +85,7 @@ app.use("/api/tests", testRoutes);
 app.use("/api/mirror", mirrorRoutes);
 app.use("/api/progsnap", progsnapRoutes);
 app.use("/api/maintenance", maintenanceRoutes);
+app.use("/api/checks", checkRoutes);
 
 app.use(express.static(path.join(__dirname, "public")));
 

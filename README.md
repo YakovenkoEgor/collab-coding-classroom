@@ -45,6 +45,15 @@ The first time you run code, Docker will pull the `eclipse-temurin:21-jdk`
 image (a few hundred MB, one-time download); after that it's cached
 locally and runs are fast.
 
+Diagram assignments need a second image. Pull it before the first lesson that
+uses one: a 500 MB download does not fit inside a single render's time limit,
+so the platform checks for the image and says plainly that it is missing rather
+than leaving a student waiting:
+
+```bash
+docker pull plantuml/plantuml:latest
+```
+
 You can sanity-check Docker works with:
 
 ```bash
@@ -165,6 +174,153 @@ what the list shows (a mark clears a review badge, for instance).
 Deleting a student removes their work, marks, discussions, test attempts and
 process-log events along with the account, and asks for their login typed out
 as confirmation.
+
+## Diagram assignments (PlantUML)
+
+A fifth assignment type, **Диаграмма**: the student writes PlantUML and sees
+the picture beside the source. Everything around it - the deadline and mark per
+study group, versions, the discussion, grading - is the same as for code.
+
+- **One file, two panes**: the source and the render. A diagram assignment is a
+  single `.puml` - there is nothing to put in a project tree, so there is none,
+  on either side of the screen. The render starts empty: drawing a diagram
+  starts a container, so it happens when the student presses **Отрисовать** and
+  not before. There is no entry point and no console.
+- **A saved version carries its picture.** Saving a draft or handing work in
+  renders the diagram and stores the SVG with the version
+  (`submission_renders`). The teacher's review shows those, never a fresh
+  render: what is marked is what was handed in, and it works whether or not the
+  renderer is up. A real class diagram is 20-40 KB of SVG, so a term of work is
+  a few megabytes.
+- **Errors are shown as text.** PlantUML answers a broken diagram with a
+  picture of its own welcome screen, which tells a student nothing, so the
+  renderer runs it with `-stdrpt:1` and reports what comes back:
+  *Строка 3: Syntax Error? (Assumed diagram type: component)*.
+
+### Running it
+
+Rendering needs one image, pulled once:
+
+```bash
+docker pull plantuml/plantuml:latest
+```
+
+It carries PlantUML and Graphviz, which class, object, component, deployment,
+state and use-case diagrams need for layout.
+
+Each render is a throwaway container with no network, a read-only filesystem,
+bounded memory, CPU and time - the same treatment student Java gets. On top of
+that PlantUML runs under `PLANTUML_SECURITY_PROFILE=SANDBOX`, which refuses
+local files and URLs and ignores allowlists, so `!include` cannot reach
+anything. Rendered SVG is shown through an `<img>` tag, where a script inside
+someone else's picture cannot touch the page.
+
+Environment variables: `PLANTUML_IMAGE`, `PLANTUML_ARGS`, `PLANTUML_TIMEOUT_MS`
+(default 30000), `PLANTUML_MEMORY_LIMIT`, `PLANTUML_CPUS`,
+`PLANTUML_CONCURRENCY` (default 4), `PLANTUML_CACHE_LIMIT`,
+`PLANTUML_MAX_SOURCE_CHARS`, `PLANTUML_MAX_SVG_CHARS`.
+
+## Automatic checking
+
+A diagram assignment can carry **reference solutions** and be checked against
+them automatically. The verdict is one of three - `accepted`, `rejected`,
+`needs_review` - and it is **never a mark**: grading stays where it was, in the
+teacher's hands, and nothing here writes to `grades`.
+
+The machinery is deliberately split in two:
+
+- **`checker/`** holds the checkers themselves, as standalone command-line
+  tools with their own tests. They know nothing about Express or SQLite. The
+  one that exists is `uml_check`, a Python package that compares a class
+  diagram with up to three references: its own PlantUML parser, name
+  normalisation with Russian lemmatisation, optimal matching by the Hungarian
+  algorithm, five criteria (classes, attributes, relations, relation types and
+  multiplicities, graph structure) and a verdict by configurable thresholds.
+  See `checker/README.md`.
+- **`checks/`** is the platform's side: which checker an assignment uses, the
+  configuration, the reference files, and the log of runs. It is written to be
+  reused - a checker for code assignments is a new module in `checks/` and a
+  row in the registry, with no change to the tables, the routes or the screens.
+
+### Setting it up
+
+The checker runs in its own Python environment, created once:
+
+```bash
+cd checker
+python -m venv .venv
+.venv/Scripts/python -m pip install -r requirements.txt
+```
+
+(on Linux/macOS, `.venv/bin/python`). The platform looks for the interpreter in
+`UML_CHECK_PYTHON`, then `checker/.venv`, then `python` on `PATH`. No Docker is
+involved: the student's file is data that gets parsed, never executed, and
+nothing reaches the network.
+
+If the environment is missing, the assignment form says so and checking is
+simply skipped - work is still handed in, saved and marked as usual.
+
+### Setting it on an assignment
+
+In the assignment form (type **Диаграмма**), under *Автоматическая проверка*:
+
+- **Эталоны** - up to three `.puml` files, pasted or loaded from disk. All of
+  them count as correct; a student's work is compared with each and judged by
+  the closest one. They are teacher-only: no route hands a reference to a
+  student, and a student's report never names a class that exists only there.
+- **Обязательные классы / связи** - without them the work is not accepted.
+- **Синонимы** - names that count as the same thing, one group per line
+  (`Клиент: Заказчик, Покупатель`).
+- **Пороги и веса** - how much similarity is enough, and what the five criteria
+  count for. The defaults come from the specification the checker implements.
+- **Показать конфигурацию** prints the configuration file exactly as the
+  checker will read it.
+
+### When it runs
+
+- when a student **hands work in** - automatically, and the verdict comes back
+  with the submission;
+- when a student presses **Проверить** - as often as they like, on whatever is
+  in the editor, without saving anything;
+- when the teacher presses **Проверить эту версию** on the review screen.
+
+Every run is stored in `check_runs` with the full report, the hash of the
+configuration and the version of the tool, and is logged as a ProgSnap2
+`X-Check.Run` event. That is what makes the thresholds calibratable later: the
+automatic verdict and the teacher's eventual mark sit side by side in the same
+database.
+
+### What each side sees
+
+The teacher gets the whole report: the score, the five criteria, what is
+missing, what is extra, which relations are inverted, and the closest reference
+drawn next to the work. The student gets the verdict and plain remarks -
+*«Кажется, не хватает класса, связанного с Клиентом»*, *«У связи Счёт -
+Операция другой тип связи»* - with no numbers, no metric names and nothing of
+the reference's text. `needs_review` reads as "отправлено преподавателю".
+
+The roster of an assignment gains a column with the verdict of each student's
+last **saved** version, so the works that the checker could not decide are
+visible without opening them one by one.
+
+Environment variables: `UML_CHECK_PYTHON`, `UML_CHECK_TIMEOUT_MS` (default
+60000), `UML_CHECK_MAX_SOURCE_CHARS`, `CHECK_CONCURRENCY` (default 2),
+`CHECK_QUEUE_LIMIT`.
+
+### Running the checker's own tests
+
+```bash
+cd checker
+.venv/Scripts/python -m pip install -r requirements-dev.txt
+.venv/Scripts/python -m pytest tests -q
+```
+
+The parser tests cover every PlantUML construct the checker claims to support,
+plus files that do not parse and diagrams of other kinds. The metamorphic tests
+cover the properties a check must have: the order of lines in a file changes
+nothing, a reference checked against itself scores exactly 1.0, renaming to a
+configured synonym changes nothing, removing classes or relations lowers the
+score monotonically, and each reference is accepted and recognised as itself.
 
 ## Deadlines and top marks
 
@@ -411,8 +567,19 @@ resetting if the data matters.
 
 ## Known limitations / things to improve next
 
-- **No automated test cases** — by design, per your requirements. Grading
-  is fully manual.
+- **Code assignments are still marked by hand** — automatic checking exists
+  only for diagrams so far. The layer it runs on (`checks/`) was written to
+  take another checker without changing the tables, the routes or the screens,
+  so running tests against submitted Java is a new module there, not a rebuild.
+- **The diagram checker is not calibrated yet** — the thresholds are the ones
+  its specification suggests, not ones fitted to real work. Two things the
+  specification asks for are deliberately left for later: a second,
+  independent implementation of the metrics to check them against, and a
+  calibration run over student diagrams marked by two teachers. Everything
+  needed for the second is already being recorded in `check_runs` next to the
+  marks the teacher gives.
+- **The verdict never becomes a mark** — by design. The checker says
+  "accepted", "rejected" or "needs the teacher"; the mark stays manual.
 - **The program's working directory is writable and not `noexec`** — it
   is a bind mount, and Docker cannot add `noexec` to one; a bind mount
   takes the options of its source on the host. A program could therefore
@@ -459,6 +626,14 @@ java-classroom/
 ├── server.js              # Express app entry point
 ├── sandbox.js               # Docker-based code execution sandbox
 ├── mirror.js                # The file server a networked run can download from
+├── plantuml.js              # Rendering diagrams, sandboxed the same way code is
+├── checks/
+│   ├── index.js             # Automatic checking: the registry and the runner
+│   ├── umlClass.js          # Checker: class diagrams against reference ones
+│   └── yaml.js              # Writing the configuration file a checker reads
+├── checker/                 # The checkers themselves - standalone tools
+│   ├── uml_check/           # Python package: parser, matching, metrics, verdict
+│   └── tests/               # pytest: the parser and the metamorphic tests
 ├── progsnap.js              # The process log, in ProgSnap2's shape
 ├── db/database.js          # SQLite connection + schema
 ├── middleware/auth.js      # Login/role-check middleware
@@ -471,6 +646,7 @@ java-classroom/
 │   ├── mirror.js            # Files served to the sandbox over HTTP
 │   ├── progsnap.js          # Edit capture config + the editor's reports
 │   ├── maintenance.js       # Backup / ProgSnap2 export from the dashboard
+│   ├── checks.js            # Automatic checking: settings, runs, reports
 │   ├── tests.js             # Sitting a test, reading the result
 │   └── grades.js            # Grading
 ├── public/

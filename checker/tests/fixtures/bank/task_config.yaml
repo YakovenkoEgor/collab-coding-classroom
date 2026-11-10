@@ -1,0 +1,8 @@
+task_id: bank-lab1
+refs: [ref_1.puml, ref_2.puml]
+language: ru
+synonyms:
+  Клиент: [Заказчик, Покупатель]
+  Счёт: [Аккаунт]
+required_classes: [Клиент, Счёт]
+required_relations: [[Клиент, Счёт]]

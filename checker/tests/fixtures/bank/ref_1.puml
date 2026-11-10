@@ -1,0 +1,21 @@
+@startuml
+class Клиент {
+  +фио : String
+  +телефон : String
+  +email : String
+}
+class Счёт {
+  +номер : String
+  +баланс : double
+}
+class Операция {
+  +дата : Date
+  +сумма : double
+}
+class Платёж {
+  +получатель : String
+}
+Клиент "1" *-- "0..*" Счёт
+Счёт "1" o-- "0..*" Операция
+Операция <|-- Платёж
+@enduml

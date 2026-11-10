@@ -50,6 +50,13 @@ const counts = {
   notifications: db.prepare("SELECT COUNT(*) c FROM notifications").get().c,
   test_questions: db.prepare("SELECT COUNT(*) c FROM test_questions").get().c,
   test_attempts: db.prepare("SELECT COUNT(*) c FROM test_attempts").get().c,
+  submission_renders: db
+    .prepare("SELECT COUNT(*) c FROM submission_renders")
+    .get().c,
+  check_runs: db.prepare("SELECT COUNT(*) c FROM check_runs").get().c,
+  assignment_reference_files: db
+    .prepare("SELECT COUNT(*) c FROM assignment_reference_files")
+    .get().c,
   events: db.prepare("SELECT COUNT(*) c FROM events").get().c,
   event_code_states: db.prepare("SELECT COUNT(*) c FROM event_code_states").get().c,
 };
@@ -81,11 +88,19 @@ const storedNames = db
 const wipe = db.transaction(() => {
   db.prepare("DELETE FROM messages").run();
   db.prepare("DELETE FROM discussions").run();
+  // Rendered diagrams hang off versions; children first, as everywhere here.
+  db.prepare("DELETE FROM submission_renders").run();
+  // Прогоны автопроверки ссылаются на версии работ, поэтому уходят раньше них.
+  // Настройка проверки и эталоны - это материал задания, а не работа ученика:
+  // они удаляются вместе с заданиями, ниже.
+  db.prepare("DELETE FROM check_runs").run();
   db.prepare("DELETE FROM submission_files").run();
   db.prepare("DELETE FROM submissions").run();
   db.prepare("DELETE FROM grades").run();
   db.prepare("DELETE FROM assignment_files").run();
   db.prepare("DELETE FROM assignment_starter_files").run();
+  db.prepare("DELETE FROM assignment_reference_files").run();
+  db.prepare("DELETE FROM assignment_checks").run();
   db.prepare("DELETE FROM assignment_group_rules").run();
   db.prepare("DELETE FROM submission_uploads").run();
   // Test answers point at attempts and questions, both of which point at the
@@ -147,6 +162,7 @@ for (const table of [
   "test_options",
   "test_attempts",
   "test_answers",
+  "submission_renders",
   "events",
   "event_code_states",
   "event_code_state_files",

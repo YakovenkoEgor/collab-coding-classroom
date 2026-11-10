@@ -203,6 +203,24 @@ CREATE TABLE IF NOT EXISTS test_answers (
   PRIMARY KEY (attempt_id, question_id)
 );
 
+-- Rendered diagrams, one row per diagram file of a saved version.
+--
+-- A version of a diagram assignment carries pictures of its diagrams, not just
+-- their source: that is what the teacher looks at when reviewing, and it stays
+-- correct even if the renderer is unavailable or PlantUML changes later. The
+-- source itself lives in submission_files like any other project file.
+--
+-- A file that would not render has svg NULL and error set, so a version
+-- that was saved with a broken diagram says so instead of looking empty.
+CREATE TABLE IF NOT EXISTS submission_renders (
+  submission_id INTEGER NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
+  filename      TEXT NOT NULL,
+  svg           TEXT,
+  error         TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (submission_id, filename)
+);
+
 -- Process data in the ProgSnap2 sense: an append-only log of what happened
 -- while a student worked, so the course can be analysed afterwards (and the
 -- data shared in a standard format - see progsnap.js and
@@ -257,6 +275,74 @@ CREATE TABLE IF NOT EXISTS event_code_state_files (
   is_entry      INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (code_state_id, filename)
 );
+
+-- --------------------------------------------------------------------
+-- Автоматическая проверка работ
+--
+-- Три таблицы, общие для всех видов проверок (сейчас это диаграммы, дальше
+-- будут кодовые задания): настройка на задании, учительские артефакты, по
+-- которым проверка идёт, и журнал прогонов. Что именно делает проверка,
+-- таблицы не знают - это дело модуля из checks/.
+-- --------------------------------------------------------------------
+
+-- Какая проверка включена на задании и с какой конфигурацией. Конфигурация
+-- хранится как JSON; инструменту она передаётся в том виде, который он ждёт
+-- (uml-check - как task_config.yaml).
+CREATE TABLE IF NOT EXISTS assignment_checks (
+  assignment_id INTEGER PRIMARY KEY REFERENCES assignments(id),
+  checker       TEXT NOT NULL,
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  config        TEXT NOT NULL DEFAULT '{}',
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Эталоны задания (и любые другие файлы, по которым проверка сравнивает).
+-- Это учительские данные: ни один маршрут не отдаёт их студенту, и в
+-- студенческий отчёт их имена не попадают.
+--
+-- svg - отрисовка эталона, чтобы преподаватель видел его рядом с работой, не
+-- запуская рендер заново; render_error - почему отрисовать не удалось.
+CREATE TABLE IF NOT EXISTS assignment_reference_files (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  assignment_id INTEGER NOT NULL REFERENCES assignments(id),
+  slot          TEXT NOT NULL,
+  filename      TEXT NOT NULL,
+  content       TEXT NOT NULL,
+  encoding      TEXT NOT NULL DEFAULT 'text',
+  svg           TEXT,
+  render_error  TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(assignment_id, slot)
+);
+
+-- Один прогон проверки. Строки не обновляются и не удаляются: это запись о
+-- том, что проверка такой-то версии такой-то конфигурацией дала такой-то
+-- результат. Отсюда же берутся данные для калибровки порогов - рядом с
+-- вердиктом автомата всегда есть оценка преподавателя из grades.
+CREATE TABLE IF NOT EXISTS check_runs (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  assignment_id  INTEGER NOT NULL REFERENCES assignments(id),
+  student_id     INTEGER REFERENCES users(id),
+  submission_id  INTEGER REFERENCES submissions(id),
+  checker        TEXT NOT NULL,
+  verdict        TEXT,
+  score          REAL,
+  report         TEXT,
+  teacher_report TEXT,
+  student_report TEXT,
+  config_hash    TEXT,
+  tool_version   TEXT,
+  code_state_id  TEXT,
+  initiated_by   TEXT NOT NULL DEFAULT 'student',
+  error          TEXT,
+  duration_ms    INTEGER,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_check_runs_pair
+  ON check_runs(assignment_id, student_id, id);
+CREATE INDEX IF NOT EXISTS idx_check_runs_submission
+  ON check_runs(submission_id, id);
 
 CREATE TABLE IF NOT EXISTS grades (
   assignment_id INTEGER NOT NULL REFERENCES assignments(id),

@@ -1,0 +1,6 @@
+# Pinned: the report carries these versions in "meta", and two runs of the
+# same input must produce the same bytes (ТЗ п. 10.6).
+scipy==1.18.1
+PyYAML==6.0.3
+pymorphy3==2.0.6
+pymorphy3-dicts-ru==2.4.417150.4580142

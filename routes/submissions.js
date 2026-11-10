@@ -10,6 +10,8 @@ const {
 const projectFiles = require("../projectFiles");
 const progsnap = require("../progsnap");
 const rules = require("../assignmentRules");
+const plantuml = require("../plantuml");
+const checks = require("../checks");
 
 const router = express.Router();
 
@@ -72,6 +74,16 @@ function filesForSubmission(submissionId) {
     .prepare(
       `SELECT filename, content, encoding, is_entry AS isEntry
        FROM submission_files WHERE submission_id = ? ORDER BY is_entry DESC, filename`
+    )
+    .all(submissionId);
+}
+
+// The rendered diagrams of one version, in file-name order.
+function rendersForSubmission(submissionId) {
+  return db
+    .prepare(
+      `SELECT filename, svg, error FROM submission_renders
+       WHERE submission_id = ? ORDER BY filename`
     )
     .all(submissionId);
 }
@@ -316,6 +328,42 @@ router.get("/:submissionId/files", requireLogin, (req, res) => {
   res.json({ files: filesForSubmission(submission.id) });
 });
 
+// The pictures stored with one version. Same rule as its files: a student may
+// only read their own.
+router.get("/:submissionId/renders", requireLogin, (req, res) => {
+  const submission = db
+    .prepare("SELECT * FROM submissions WHERE id = ?")
+    .get(req.params.submissionId);
+  if (!submission) return res.status(404).json({ error: "Версия не найдена" });
+
+  if (
+    req.session.user.role !== "teacher" &&
+    submission.student_id !== req.session.user.id
+  ) {
+    return res.status(403).json({ error: "Это не ваша версия" });
+  }
+
+  res.json({ renders: rendersForSubmission(submission.id) });
+});
+
+// Draw one diagram without saving anything - what the "Отрисовать" button
+// does. The source is text the caller just typed, so nothing is looked up and
+// nothing is stored; the renderer sandboxes it (see plantuml.js).
+router.post("/render", requireLogin, async (req, res) => {
+  const source = typeof req.body.source === "string" ? req.body.source : "";
+  try {
+    const result = await plantuml.render(source);
+    res.json({
+      filename: typeof req.body.filename === "string" ? req.body.filename : null,
+      svg: result.svg || null,
+      error: result.error || null,
+    });
+  } catch (err) {
+    console.error("[plantuml]", err);
+    res.status(502).json({ error: "Не удалось отрисовать диаграмму" });
+  }
+});
+
 // Compile & run the project without saving a version (scratch run).
 // The entry file is the one the student has open, like running the current
 // file in an IDE.
@@ -437,6 +485,15 @@ router.post(
       };
     }
 
+    // Задание-диаграмма - это один файл .puml: в редакторе ученика нет дерева
+    // проекта, значит и сдавать больше одного файла неоткуда. Если лишние
+    // всё-таки пришли, сохраняется открытая диаграмма.
+    if (assignmentType === "diagram") {
+      const chosen =
+        project.files.find((f) => f.filename === project.entry) || project.files[0];
+      project = { files: [chosen], entry: chosen.filename };
+    }
+
     // Code is compiled and run only when the student actually submits.
     // Saving a draft used to cost a full sandbox run, which doubled the load
     // for no one's benefit - the student presses Run when they want output.
@@ -445,7 +502,12 @@ router.post(
     let runResult = {
       stdout: "",
       stderr: "",
-      status: assignmentType === "text" ? "Saved" : "Not run",
+      // Neither a written answer nor a diagram is run, so "not run" would be
+      // a strange thing to show against them.
+      status:
+        assignmentType === "text" || assignmentType === "diagram"
+          ? "Saved"
+          : "Not run",
     };
     // What the student typed into the console-input box, if anything. Stored
     // with the version so the teacher can rerun it under the same input.
@@ -469,6 +531,20 @@ router.post(
         if (err instanceof SandboxError) return res.status(400).json({ error: err.message });
         if (err instanceof QueueFullError) return res.status(503).json({ error: err.message });
         console.error(err);
+      }
+    }
+
+    // A version of a diagram assignment carries pictures of its diagrams, not
+    // just their source. Rendering happens before the transaction - it starts
+    // containers, which has no business inside a database write - and all of
+    // the project's diagrams are rendered, so the teacher sees every one of
+    // them without having to guess which file was open at the time.
+    let renders = [];
+    if (assignmentType === "diagram") {
+      try {
+        renders = await plantuml.renderAll(project.files);
+      } catch (err) {
+        console.error("[plantuml] не удалось отрисовать версию:", err.message);
       }
     }
 
@@ -510,6 +586,22 @@ router.post(
           file.filename === project.entry ? 1 : 0
         );
       }
+
+      // The pictures, rendered above. A diagram that would not render is
+      // stored as its error, so the version says what went wrong instead of
+      // looking as though nothing was drawn.
+      const insertRender = db.prepare(
+        `INSERT INTO submission_renders (submission_id, filename, svg, error)
+         VALUES (?, ?, ?, ?)`
+      );
+      for (const render of renders) {
+        insertRender.run(
+          info.lastInsertRowid,
+          render.filename,
+          render.svg || null,
+          render.error || null
+        );
+      }
       return info.lastInsertRowid;
     });
 
@@ -532,7 +624,45 @@ router.post(
       status: submission.status,
     });
 
-    res.json({ submission, files: filesForSubmission(submissionId) });
+    // Автоматическая проверка (см. checks/) идёт только при сдаче: черновик
+    // студент сохраняет часто, и проверять каждый из них не за чем. Её провал
+    // сдачу не отменяет - прогон с ошибкой уже записан в журнал, а студенту
+    // видно, что проверка не выполнилась.
+    let check = null;
+    if (submission.status === "submitted") {
+      const assignment = db
+        .prepare("SELECT * FROM assignments WHERE id = ?")
+        .get(assignmentId);
+      const ready = assignment ? checks.readyFor(assignment) : null;
+      const chosen =
+        ready && ready.checker.pickFile
+          ? ready.checker.pickFile(project.files, project.entry)
+          : null;
+      if (chosen) {
+        try {
+          const run = await checks.runCheck({
+            assignment,
+            studentId,
+            submissionId,
+            source: chosen.content,
+            filename: chosen.filename,
+            files: project.files,
+            initiatedBy: "submit",
+            sessionId: req.sessionID,
+          });
+          check = {
+            verdict: run.verdict,
+            report: run.studentReport || "",
+            error: null,
+          };
+        } catch (err) {
+          console.error("[checks] проверка сданной работы не выполнена:", err.message);
+          check = { verdict: "error", report: "", error: err.message };
+        }
+      }
+    }
+
+    res.json({ submission, files: filesForSubmission(submissionId), check });
   }
 );
 
