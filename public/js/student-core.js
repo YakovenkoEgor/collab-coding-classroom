@@ -132,7 +132,13 @@ function escapeHtml(str) {
 // Assignment types
 // ---------------------------------------------------------------------
 
-const TYPE_LABEL = { code: "Код", text: "Текст", freeform: "Произвольное", test: "Тест" };
+const TYPE_LABEL = {
+  code: "Код",
+  diagram: "Диаграмма",
+  text: "Текст",
+  freeform: "Произвольное",
+  test: "Тест",
+};
 
 // Version names, mirrored from routes/submissions.js
 const MAX_VERSION_TITLE = 80;
@@ -160,35 +166,50 @@ function typeBadge(type) {
 // Code and text assignments: an editor plus the version history.
 function renderWorkCard() {
   const isText = assignmentType() === "text";
+  const isDiagram = assignmentType() === "diagram";
   return `
     <div class="card">
-      <h3>${isText ? "Ваш ответ" : "Редактор кода"}</h3>
+      <h3>${isText ? "Ваш ответ" : isDiagram ? "Диаграмма" : "Редактор кода"}</h3>
       ${
         isText
           ? '<textarea id="text-editor" class="text-editor" placeholder="Напишите ответ здесь…"></textarea>'
           : `<div class="editor-layout" id="editor-layout">
-               <div class="file-tree">
-                 <div class="file-tree-header">Проект</div>
-                 <div id="file-list"></div>
-                 <div class="file-tree-actions">
-                   <button class="secondary" id="new-file-btn">+ Новый файл</button>
-                   <button class="secondary" id="add-local-file-btn"
-                           title="Взять файл с этого компьютера и положить в проект">
-                     + Файл с компьютера
-                   </button>
-                 </div>
-                 <input type="file" id="local-file-input" multiple hidden>
-               </div>
+               ${
+                 // Диаграмма - это один файл .puml, поэтому дерева проекта у
+                 // неё нет: нечего в нём держать и нечего выбирать. У кодового
+                 // задания файлов много, и дерево на месте.
+                 isDiagram
+                   ? ""
+                   : `<div class="file-tree">
+                        <div class="file-tree-header">Проект</div>
+                        <div id="file-list"></div>
+                        <div class="file-tree-actions">
+                          <button class="secondary" id="new-file-btn">+ Новый файл</button>
+                          <button class="secondary" id="add-local-file-btn"
+                                  title="Взять файл с этого компьютера и положить в проект">
+                            + Файл с компьютера
+                          </button>
+                        </div>
+                        <input type="file" id="local-file-input" multiple hidden>
+                      </div>`
+               }
                <div class="editor-wrap" id="editor-container"></div>
                <div class="binary-note" id="binary-note" hidden></div>
+               ${isDiagram ? renderDiagramPane() : ""}
              </div>
-             <div id="entry-hint" class="muted"></div>
+             ${isDiagram ? "" : '<div id="entry-hint" class="muted"></div>'}
              <div id="network-hint" style="font-size:12px; margin-top:4px"></div>`
       }
       <div id="readonly-banner"></div>
       <div class="toolbar">
-        ${isText ? "" : '<button id="run-btn">▶ Запустить</button>'}
-        ${isText ? "" : '<button class="secondary" id="console-stop" hidden>■ Стоп</button>'}
+        ${
+          isDiagram
+            ? '<button id="render-btn">▣ Отрисовать</button>'
+            : isText
+              ? ""
+              : '<button id="run-btn">▶ Запустить</button>'
+        }
+        ${isText || isDiagram ? "" : '<button class="secondary" id="console-stop" hidden>■ Стоп</button>'}
         <input id="version-title" maxlength="${MAX_VERSION_TITLE}" style="flex:1;min-width:140px"
                placeholder="Название версии (необязательно)">
         <button class="secondary" id="rename-version-btn" hidden>Переименовать</button>
@@ -196,7 +217,7 @@ function renderWorkCard() {
         <button id="submit-btn">Сдать</button>
       </div>
       ${
-        isText
+        isText || isDiagram
           ? ""
           : // One console for everything: program output, errors and what the
             // student types, in the order it happened - the input line lives
@@ -207,9 +228,29 @@ function renderWorkCard() {
       }
     </div>
 
+    ${isDiagram ? renderStudentCheckCard() : ""}
+
     <div class="card">
       <h3>История версий</h3>
       <div class="version-list" id="version-list"><p class="muted">Загрузка…</p></div>
+    </div>`;
+}
+
+// The third pane of a diagram assignment: the picture, and under it whatever
+// PlantUML had to say. Empty until "Отрисовать" is pressed - rendering starts a
+// container, so it happens when the student asks for it and not before.
+function renderDiagramPane() {
+  return `
+    <div class="diagram-pane" id="diagram-pane">
+      <div class="diagram-pane-header">
+        <span id="diagram-title">Отрисовка</span>
+        <span class="muted" id="diagram-state"></span>
+      </div>
+      <div class="diagram-view" id="diagram-view" hidden></div>
+      <div class="diagram-empty" id="diagram-empty">
+        Нажмите «Отрисовать», чтобы увидеть диаграмму.
+      </div>
+      <div class="diagram-errors" id="diagram-errors" hidden></div>
     </div>`;
 }
 
@@ -682,6 +723,13 @@ async function renderMainPanel() {
   const type = assignmentType();
   if (type === "test") {
     await loadTest();
+  } else if (type === "diagram") {
+    // The same editor as code, plus the render pane - but one file, so no tree:
+    // there is no program to run either, hence no console and no entry point.
+    await setupEditor();
+    document.getElementById("render-btn").onclick = renderCurrentDiagram;
+    wireStudentCheck();
+    await loadStudentCheck();
   } else if (type === "code") {
     await setupEditor();
     document.getElementById("new-file-btn").onclick = addFile;
@@ -710,6 +758,7 @@ async function renderMainPanel() {
   }
 
   if (type !== "freeform" && type !== "test") {
+    // Saving and handing in work the same way for code, text and diagrams.
     document.getElementById("save-draft-btn").onclick = () => saveVersion("draft");
     document.getElementById("submit-btn").onclick = () => saveVersion("submitted");
     document.getElementById("rename-version-btn").onclick = renameVersion;
@@ -720,15 +769,252 @@ async function renderMainPanel() {
   });
 }
 
+// ---------- Automatic checking ----------
+//
+// Диаграмму можно отдать на проверку, не сдавая работу, и столько раз,
+// сколько нужно: при сдаче она всё равно проверится. Видно ровно то, что
+// можно понять, не зная ни метрик, ни эталонов: вердикт и список замечаний.
+
+function renderStudentCheckCard() {
+  return `
+    <div class="card check-card" id="check-card" hidden>
+      <h3>Автоматическая проверка</h3>
+      <div class="check-head">
+        <span id="check-verdict"></span>
+        <span class="muted" style="font-size:12px" id="check-meta"></span>
+        <button class="secondary small" id="check-run-btn" type="button">
+          Проверить
+        </button>
+      </div>
+      <div class="check-report" id="check-report">
+        <p class="muted">
+          Нажмите «Проверить», чтобы сравнить диаграмму с условием задания.
+        </p>
+      </div>
+    </div>`;
+}
+
+function wireStudentCheck() {
+  const button = document.getElementById("check-run-btn");
+  if (!button) return;
+  button.onclick = runStudentCheck;
+}
+
+async function runStudentCheck() {
+  const button = document.getElementById("check-run-btn");
+  const file = currentFile();
+  if (!file) return;
+
+  syncEditorToFile();
+  button.disabled = true;
+  const label = button.textContent;
+  button.textContent = "Проверяю…";
+  try {
+    const { run } = await api("/api/checks/run", {
+      method: "POST",
+      body: JSON.stringify({
+        assignmentId: activeAssignment.id,
+        filename: file.filename,
+        source: file.content,
+      }),
+    });
+    showStudentCheck(run);
+  } catch (err) {
+    showStudentCheck({ verdict: "error", error: err.message });
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
+// Есть ли у задания проверка, и что она сказала в последний раз.
+async function loadStudentCheck() {
+  const card = document.getElementById("check-card");
+  if (!card) return;
+  try {
+    const { configured, run } = await api(
+      `/api/checks/runs/latest?assignmentId=${activeAssignment.id}`
+    );
+    if (!configured) {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    if (run) showStudentCheck(run);
+  } catch {
+    card.hidden = true;
+  }
+}
+
+function showStudentCheck(run) {
+  const card = document.getElementById("check-card");
+  const verdict = document.getElementById("check-verdict");
+  const meta = document.getElementById("check-meta");
+  const report = document.getElementById("check-report");
+  if (!card || !run) return;
+  card.hidden = false;
+
+  verdict.innerHTML = verdictBadge(run.verdict);
+  meta.textContent = run.createdAt
+    ? new Date(run.createdAt).toLocaleString()
+    : "только что";
+
+  if (run.verdict === "error") {
+    report.innerHTML = `<p class="muted">Проверка не выполнилась: ${escapeHtml(
+      run.error || "неизвестная причина"
+    )}. Это не ошибка в вашей работе — сообщите преподавателю.</p>`;
+    return;
+  }
+  report.innerHTML = renderCheckMarkdown(run.report);
+}
+
+// ---------------------------------------------------------------------
+// Diagram assignments
+//
+// The third pane of the editor. What is in it, by file name: either a picture
+// the student has just asked for, or the one stored with the version they are
+// looking at. Pressing "Отрисовать" draws the file that is open; nothing is
+// drawn on its own, because every render starts a container.
+// ---------------------------------------------------------------------
+
+let diagramRenders = new Map(); // filename -> { svg, error }
+
+function isDiagramFile(filename) {
+  return /\.(puml|plantuml|uml|wsd|iuml)$/i.test(String(filename || ""));
+}
+
+// The SVG goes into an <img>, not into the page. A picture built from a
+// student's own text has no business running scripts next to their session,
+// and inside an <img> it cannot.
+function svgToDataUrl(svg) {
+  const bytes = new TextEncoder().encode(svg);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `data:image/svg+xml;base64,${btoa(binary)}`;
+}
+
+function setDiagramState(text) {
+  const state = document.getElementById("diagram-state");
+  if (state) state.textContent = text || "";
+}
+
+// Puts whatever is known about one file into the pane.
+function showDiagram(filename) {
+  const view = document.getElementById("diagram-view");
+  const empty = document.getElementById("diagram-empty");
+  const errors = document.getElementById("diagram-errors");
+  const title = document.getElementById("diagram-title");
+  if (!view || !empty || !errors) return;
+
+  if (title) title.textContent = filename ? filename : "Отрисовка";
+
+  const render = filename ? diagramRenders.get(filename) : null;
+
+  if (!render) {
+    view.hidden = true;
+    view.innerHTML = "";
+    errors.hidden = true;
+    errors.textContent = "";
+    empty.hidden = false;
+    empty.textContent = isDiagramFile(filename)
+      ? "Нажмите «Отрисовать», чтобы увидеть диаграмму."
+      : "Выберите файл диаграммы (.puml), чтобы его отрисовать.";
+    return;
+  }
+
+  if (render.svg) {
+    view.innerHTML = `<img alt="Диаграмма ${escapeHtml(filename)}" src="${svgToDataUrl(
+      render.svg
+    )}">`;
+    view.hidden = false;
+    empty.hidden = true;
+  } else {
+    view.hidden = true;
+    view.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = "Диаграмма не отрисована.";
+  }
+
+  if (render.error) {
+    errors.textContent = render.error;
+    errors.hidden = false;
+  } else {
+    errors.textContent = "";
+    errors.hidden = true;
+  }
+}
+
+// The button. Draws the file that is open, and only it.
+async function renderCurrentDiagram() {
+  const button = document.getElementById("render-btn");
+  const file = currentFile();
+
+  if (!file || !isDiagramFile(file.filename)) {
+    setDiagramState("");
+    showDiagram(file ? file.filename : null);
+    return;
+  }
+
+  syncEditorToFile();
+  if (button) button.disabled = true;
+  setDiagramState("отрисовываю…");
+
+  try {
+    const result = await api("/api/submissions/render", {
+      method: "POST",
+      body: JSON.stringify({ filename: file.filename, source: file.content }),
+    });
+    diagramRenders.set(file.filename, {
+      svg: result.svg || null,
+      error: result.error || null,
+    });
+    setDiagramState(result.svg ? "готово" : "с ошибкой");
+  } catch (err) {
+    diagramRenders.set(file.filename, { svg: null, error: err.message });
+    setDiagramState("не удалось");
+  } finally {
+    if (button) button.disabled = false;
+    showDiagram(file.filename);
+  }
+}
+
+// The pictures stored with a version, shown when that version is opened. They
+// replace anything drawn by hand, because they are what was actually handed in.
+async function loadStoredRenders(submissionId) {
+  if (assignmentType() !== "diagram") return;
+  diagramRenders = new Map();
+  if (!submissionId) {
+    showDiagram(activeFile);
+    return;
+  }
+  try {
+    const { renders } = await api(`/api/submissions/${submissionId}/renders`);
+    for (const render of renders) {
+      diagramRenders.set(render.filename, {
+        svg: render.svg || null,
+        error: render.error || null,
+      });
+    }
+    setDiagramState(renders.length > 0 ? "из сохранённой версии" : "");
+  } catch {
+    setDiagramState("");
+  }
+  showDiagram(activeFile);
+}
+
 async function setupEditor() {
   await editorReady;
   const container = document.getElementById("editor-container");
 
   // The assignment's starter project - possibly several files the teacher
   // prepared. Falls back to a bare Main.java if it can't be loaded.
+  const isDiagram = assignmentType() === "diagram";
+  const fallbackName = isDiagram ? "diagram.puml" : "Main.java";
   const fallback =
     activeAssignment.starter_code ||
-    "public class Main {\n    public static void main(String[] args) {\n        \n    }\n}\n";
+    (isDiagram
+      ? "@startuml" + String.fromCharCode(10) + "@enduml" + String.fromCharCode(10)
+      : "public class Main {}" + String.fromCharCode(10));
   try {
     const starter = await api(`/api/assignments/${activeAssignment.id}/starter`);
     projectFiles = starter.files.length
@@ -737,11 +1023,11 @@ async function setupEditor() {
           content: f.content,
           encoding: f.encoding === "base64" ? "base64" : "text",
         }))
-      : [{ filename: "Main.java", content: fallback, encoding: "text" }];
+      : [{ filename: fallbackName, content: fallback, encoding: "text" }];
     entryJavaFile = starter.entry || null;
   } catch {
-    projectFiles = [{ filename: "Main.java", content: fallback, encoding: "text" }];
-    entryJavaFile = "Main.java";
+    projectFiles = [{ filename: fallbackName, content: fallback, encoding: "text" }];
+    entryJavaFile = fallbackName;
   }
   activeFile = entryFile() || projectFiles[0].filename;
 
@@ -1112,10 +1398,20 @@ function renderFileTree() {
     if (!isJavaFile(file.filename)) {
       const badge = document.createElement("span");
       badge.className = "data-badge" + (isBinaryFile(file) ? " binary" : "");
-      badge.textContent = isBinaryFile(file) ? "двоич." : "данные";
+      // On a diagram assignment a .puml file is the work itself, not data
+      // sitting beside a program, so it is labelled for what it is.
+      const isDiagramSource =
+        assignmentType() === "diagram" && isDiagramFile(file.filename);
+      badge.textContent = isBinaryFile(file)
+        ? "двоич."
+        : isDiagramSource
+          ? "диагр."
+          : "данные";
       badge.title = isBinaryFile(file)
         ? "Двоичный файл — открыть в редакторе нельзя, можно скачать"
-        : "Файл данных — программа может читать и перезаписывать его";
+        : isDiagramSource
+          ? "Исходник диаграммы — отрисовывается кнопкой «Отрисовать»"
+          : "Файл данных — программа может читать и перезаписывать его";
       div.appendChild(badge);
 
       // The only way to look at a serialised object, and the quickest way to
@@ -1131,8 +1427,9 @@ function renderFileTree() {
       div.appendChild(download);
     }
 
-    // The .java file a Run starts from - marked the way an IDE does.
-    if (file.filename === entry) {
+    // The .java file a Run starts from - marked the way an IDE does. A diagram
+    // project has no entry point: every .puml stands on its own.
+    if (file.filename === entry && assignmentType() !== "diagram") {
       const badge = document.createElement("span");
       badge.className = "entry-badge";
       badge.textContent = "main";
@@ -1208,6 +1505,8 @@ function openFile(filename) {
   if (file && isJavaFile(file.filename)) entryJavaFile = file.filename;
   applyEditorToActiveFile();
   renderFileTree();
+  // The render pane follows the open file: each .puml is a diagram of its own.
+  if (assignmentType() === "diagram") showDiagram(activeFile);
 }
 
 // Puts the open file in front of the student: text in Monaco, a binary file
@@ -1378,8 +1677,21 @@ async function onLocalFilesChosen(event) {
     lastAdded = filename;
   }
 
-  if (lastAdded) openFile(lastAdded);
-  else renderFileTree();
+  if (!lastAdded) {
+    renderFileTree();
+    return;
+  }
+
+  // Replacing the file that is open needs care: openFile() starts by writing
+  // the editor's buffer back into the project, and that buffer still holds the
+  // old text - it would land straight on top of what was just imported. So the
+  // new content is pushed into the editor instead of pulled out of it.
+  if (lastAdded === activeFile) {
+    applyEditorToActiveFile();
+    renderFileTree();
+  } else {
+    openFile(lastAdded);
+  }
 }
 
 function deleteFile(filename) {
@@ -1572,6 +1884,9 @@ async function openVersion(v) {
     loadProject([{ filename: "Main.java", content: v.code }], "Main.java");
   }
   renderOutput(v.last_run_stdout, v.last_run_stderr, v.last_run_status);
+  // A diagram version carries its pictures; they are what was handed in, so
+  // they replace anything drawn by hand in this session.
+  await loadStoredRenders(v.id);
   await loadVersions();
 }
 
@@ -1641,6 +1956,9 @@ async function loadVersions() {
       loadProject([{ filename: "Main.java", content: latest.code }], "Main.java");
     }
     renderOutput(latest.last_run_stdout, latest.last_run_stderr, latest.last_run_status);
+    // A diagram version carries its own pictures: show them, so the student
+    // opens their work and sees it rather than an empty pane.
+    await loadStoredRenders(latest.id);
   }
 
   const list = document.getElementById("version-list");
@@ -1847,7 +2165,7 @@ async function saveVersion(status) {
   const btn = status === "submitted" ? document.getElementById("submit-btn") : document.getElementById("save-draft-btn");
   btn.disabled = true;
   try {
-    const { submission } = await api(`/api/submissions/assignment/${activeAssignment.id}`, {
+    const { submission, check } = await api(`/api/submissions/assignment/${activeAssignment.id}`, {
       method: "POST",
       body: JSON.stringify({
         // A text answer travels as a single blob; code sends the project
@@ -1870,13 +2188,18 @@ async function saveVersion(status) {
     });
     activeVersion = submission;
     setVersionTitleField(submission.title);
-    if (!isText) {
+    if (!isText && assignmentType() !== "diagram") {
       renderOutput(
         submission.last_run_stdout,
         submission.last_run_stderr,
         submission.last_run_status
       );
     }
+    // Saving a diagram version renders every diagram in it on the server; show
+    // what was stored, so what is on screen is what was handed in.
+    if (assignmentType() === "diagram") await loadStoredRenders(submission.id);
+    // Сданная работа проверяется сразу - вердикт приходит вместе с ответом.
+    if (check) showStudentCheck({ ...check, createdAt: submission.created_at });
     await loadVersions();
     // Submitting clears the deadline warning, so refresh what depends on it.
     if (status === "submitted") await refreshDeadlineState();

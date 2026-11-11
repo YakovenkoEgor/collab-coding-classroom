@@ -64,13 +64,15 @@ function byStudentName(a, b) {
 
 // Assignment kinds, mirrored from routes/assignments.js
 const ASSIGNMENT_TYPES = [
-  { value: "code", label: "Код", hint: "проект на Java, который ученик запускает" },
-  { value: "text", label: "Текст", hint: "письменный ответ, с теми же версиями" },
-  { value: "freeform", label: "Произвольное", hint: "ученик прикладывает файлы" },
-  { value: "test", label: "Тест", hint: "вопросы, на которые отвечают за один раз" },
+  { value: "code", label: "Код" },
+  { value: "diagram", label: "Диаграмма" },
+  { value: "text", label: "Текст" },
+  { value: "freeform", label: "Произвольное" },
+  { value: "test", label: "Тест" },
 ];
 const TYPE_LABEL = {
   code: "Код",
+  diagram: "Диаграмма",
   text: "Текст",
   freeform: "Произвольное",
   test: "Тест",
@@ -229,7 +231,7 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
             (t) =>
               `<option value="${t.value}"${
                 (editing ? assignment.type : "code") === t.value ? " selected" : ""
-              }>${t.label} — ${t.hint}</option>`
+              }>${t.label}</option>`
           ).join("")}
         </select>
         ${
@@ -267,12 +269,16 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
       </div>
       <div class="form-row" id="starter-code-row">
         <label>Стартовый проект</label>
-        <span class="muted" style="font-size:12px">
+        <span class="muted" style="font-size:12px" id="starter-hint-code">
           Файлы, с которыми открывается редактор ученика. Запуск начинается
           с того, который помечен <span class="entry-badge">main</span>.
         </span>
+        <span class="muted" style="font-size:12px" id="starter-hint-diagram">
+          Диаграмма, с которой открывается редактор ученика. У задания-диаграммы
+          один файл .puml — его ученик и правит.
+        </span>
         <div class="editor-layout" style="margin-top:6px">
-          <div class="file-tree wide" style="height:260px">
+          <div class="file-tree wide" id="starter-tree" style="height:260px">
             <div class="file-tree-header">Файлы</div>
             <div id="starter-file-list"></div>
             <div class="file-tree-actions">
@@ -287,6 +293,7 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
           <textarea id="a-starter" style="font-family: var(--font-mono); flex:1; height:260px; resize:vertical"></textarea>
         </div>
       </div>
+      ${renderCheckRow(editing ? existing.check : null)}
       <div class="form-row" id="network-row">
         <label class="checkbox-label">
           <input type="checkbox" id="a-network"${
@@ -361,12 +368,28 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
   const applyTypeToForm = () => {
     const type = typeSelect.value;
     document.getElementById("starter-code-row").style.display =
-      type === "code" ? "" : "none";
+      type === "code" || type === "diagram" ? "" : "none";
+    const codeHint = document.getElementById("starter-hint-code");
+    const diagramHint = document.getElementById("starter-hint-diagram");
+    if (codeHint) codeHint.hidden = type === "diagram";
+    if (diagramHint) diagramHint.hidden = type !== "diagram";
+    // Switching type on a new assignment swaps the starter for the one that
+    // type needs - but only while it is still the untouched default, so a
+    // starter the teacher has written is never thrown away.
+    if (!editing) swapStarterForType(type);
     document.getElementById("starter-text-row").style.display =
       type === "text" ? "" : "none";
     document.getElementById("freeform-note-row").style.display =
       type === "freeform" ? "" : "none";
     document.getElementById("test-row").style.display = type === "test" ? "" : "none";
+    // Автопроверка пока бывает только у диаграмм (см. checks/).
+    document.getElementById("check-row").style.display =
+      type === "diagram" ? "" : "none";
+    // У диаграммы один файл, поэтому дерева проекта у неё нет - ни здесь, ни
+    // в редакторе ученика.
+    const starterTree = document.getElementById("starter-tree");
+    if (starterTree) starterTree.hidden = type === "diagram";
+    if (type === "diagram") keepSingleDiagramFile();
     // Only a program can download anything, so the switch belongs to code work.
     document.getElementById("network-row").style.display = type === "code" ? "" : "none";
     // A survey is never scored, so the maximum-mark column means nothing for
@@ -446,10 +469,15 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
     starterEntry = entryRow ? entryRow.filename : starterFiles[0].filename;
     starterActive = starterEntry;
   } else {
-    // Start every new assignment from a one-file project.
-    starterFiles = [{ filename: "Main.java", content: DEFAULT_STARTER }];
-    starterEntry = "Main.java";
-    starterActive = "Main.java";
+    // Start every new assignment from a one-file project - Java for code,
+    // a diagram for a diagram.
+    const diagram = (assignment ? assignment.type : "code") === "diagram";
+    const first = diagram
+      ? { filename: "diagram.puml", content: DEFAULT_DIAGRAM_STARTER }
+      : { filename: "Main.java", content: DEFAULT_STARTER };
+    starterFiles = [first];
+    starterEntry = first.filename;
+    starterActive = first.filename;
   }
 
   document.getElementById("a-starter").value =
@@ -459,6 +487,7 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
   document.getElementById("starter-add-local-btn").onclick = addLocalStarterFile;
   document.getElementById("starter-local-file-input").onchange = onStarterLocalFilesChosen;
   renderStarterTree();
+  wireCheckRow(editing ? existing.check : null);
 
   document.getElementById("create-assignment-btn").onclick = async () => {
     const title = document.getElementById("a-title").value.trim();
@@ -484,6 +513,7 @@ function renderAssignmentForm(existing, newGroups, groupsError) {
         groupRules: collectGroupRules(),
         networkAccess: document.getElementById("a-network").checked,
         removeFileIds: removedHandoutIds,
+        ...(typeSelect.value === "diagram" ? { check: collectCheckSpec() } : {}),
         ...(typeSelect.value === "test"
           ? {
               testKind: document.getElementById("t-kind").value,
@@ -781,11 +811,81 @@ function renderExistingHandouts() {
   });
 }
 
+// Задание-диаграмма - это один файл .puml. Если в проекте оказалось больше
+// (например, задание делали до этого правила), остаётся входной: редактировать
+// остальные всё равно негде, а молча сдавать невидимые файлы - хуже.
+function keepSingleDiagramFile() {
+  const diagrams = starterFiles.filter((file) => DIAGRAM_FILENAME.test(file.filename));
+  const keep =
+    diagrams.find((file) => file.filename === starterEntry) ||
+    diagrams[0] ||
+    starterFiles[0];
+  if (!keep || starterFiles.length === 1) return;
+  starterFiles = [keep];
+  starterEntry = keep.filename;
+  starterActive = keep.filename;
+  renderStarterTree();
+  const box = document.getElementById("a-starter");
+  if (box) box.value = keep.content;
+}
+
+// Swaps an untouched default starter for the one the chosen type needs.
+// "Untouched" means one file whose name and content are still the default of
+// the other type; anything else is the teacher's work and is left alone.
+function swapStarterForType(type) {
+  if (starterFiles.length !== 1) return;
+  const only = starterFiles[0];
+  const wantsDiagram = type === "diagram";
+
+  const isDefaultJava =
+    only.filename === "Main.java" && only.content === DEFAULT_STARTER;
+  const isDefaultDiagram =
+    only.filename === "diagram.puml" && only.content === DEFAULT_DIAGRAM_STARTER;
+
+  if (wantsDiagram && isDefaultJava) {
+    starterFiles = [
+      { filename: "diagram.puml", content: DEFAULT_DIAGRAM_STARTER },
+    ];
+  } else if (!wantsDiagram && isDefaultDiagram) {
+    starterFiles = [{ filename: "Main.java", content: DEFAULT_STARTER }];
+  } else {
+    return;
+  }
+
+  starterEntry = starterFiles[0].filename;
+  starterActive = starterFiles[0].filename;
+  renderStarterTree();
+  const box = document.getElementById("a-starter");
+  if (box) box.value = starterFiles[0].content;
+}
+
 // ---------- Starter project in the new-assignment form ----------
 
 const JAVA_FILENAME = /^[A-Za-z_][A-Za-z0-9_]*\.java$/;
 const DEFAULT_STARTER =
   "public class Main {\n    public static void main(String[] args) {\n        \n    }\n}\n";
+
+// What a diagram assignment starts from, mirrored from routes/assignments.js:
+// a diagram that renders, so the student sees a picture before typing a word.
+const DEFAULT_DIAGRAM_STARTER = [
+  "@startuml",
+  "",
+  "class Animal {",
+  "  - String name",
+  "  + void speak()",
+  "}",
+  "",
+  "class Dog {",
+  "  + void speak()",
+  "}",
+  "",
+  "Animal <|-- Dog",
+  "",
+  "@enduml",
+  "",
+].join(String.fromCharCode(10));
+
+const DIAGRAM_FILENAME = /^[A-Za-z0-9_][A-Za-z0-9._-]*\.(puml|plantuml|uml|wsd|iuml)$/i;
 
 // Data files in a project, mirrored from projectFiles.js. A starter project
 // may hand out the data a program is meant to read - an input.txt next to
@@ -855,7 +955,17 @@ function downloadProjectFile(file) {
 function appendDataControls(div, file) {
   const badge = document.createElement("span");
   badge.className = "data-badge" + (isBinaryFile(file) ? " binary" : "");
-  badge.textContent = isBinaryFile(file) ? "двоич." : "данные";
+  // On a diagram assignment a .puml file is the work itself, not data beside
+  // a program.
+  const isDiagramSource =
+    activeAssignment &&
+    activeAssignment.type === "diagram" &&
+    /\.(puml|plantuml|uml|wsd|iuml)$/i.test(file.filename);
+  badge.textContent = isBinaryFile(file)
+    ? "двоич."
+    : isDiagramSource
+      ? "диагр."
+      : "данные";
   badge.title = `${file.filename} — ${formatSize(fileSizeOf(file))}${
     isBinaryFile(file) ? ", двоичный файл" : ""
   }`;
@@ -1043,8 +1153,22 @@ async function onStarterLocalFilesChosen(event) {
     lastAdded = filename;
   }
 
-  if (lastAdded) openStarterFile(lastAdded);
-  else renderStarterTree();
+  if (!lastAdded) {
+    renderStarterTree();
+    return;
+  }
+
+  // Replacing the file that is open needs care: openStarterFile() starts by
+  // writing the textarea back into the project, and it still holds the old
+  // text - it would land straight on top of what was just imported.
+  if (lastAdded === starterActive) {
+    const file = starterFiles.find((f) => f.filename === lastAdded);
+    const box = document.getElementById("a-starter");
+    if (box && file) box.value = file.content;
+    renderStarterTree();
+  } else {
+    openStarterFile(lastAdded);
+  }
 }
 
 function removeStarterFile(filename) {
@@ -1134,10 +1258,14 @@ async function selectAssignment(assignment) {
 
 async function renderOverview() {
   // `roster` rather than `students` so it doesn't shadow the sidebar list.
-  const [{ students: roster, groupRules }, { files }] = await Promise.all([
+  const [{ students: roster, groupRules, checkVerdicts }, { files }] = await Promise.all([
     api(`/api/assignments/${activeAssignment.id}/overview`),
     api(`/api/assignments/${activeAssignment.id}/files`),
   ]);
+  // Колонка с вердиктом появляется только там, где проверка настроена.
+  const hasCheckColumn =
+    !!checkVerdicts && Object.keys(checkVerdicts).length > 0;
+
   const main = document.getElementById("main-content");
   main.innerHTML = `
     <div class="card">
@@ -1160,7 +1288,9 @@ async function renderOverview() {
               : activeAssignment.type === "freeform"
                 ? "Файлы"
                 : "Последняя версия"
-          }</th><th>Статус</th><th>Активность</th><th>Оценка</th></tr>
+          }</th><th>Статус</th>${
+            hasCheckColumn ? "<th>Автопроверка</th>" : ""
+          }<th>Активность</th><th>Оценка</th></tr>
         </thead>
         <tbody id="student-rows"></tbody>
       </table>
@@ -1171,7 +1301,9 @@ async function renderOverview() {
 
   const tbody = document.getElementById("student-rows");
   if (roster.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="muted">Учеников пока нет — добавьте их на панели слева.</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="${
+      hasCheckColumn ? 7 : 6
+    }" class="muted">Учеников пока нет — добавьте их на панели слева.</td></tr>`;
     return;
   }
   const isFreeform = activeAssignment.type === "freeform";
@@ -1238,6 +1370,15 @@ async function renderOverview() {
                 }</span>`
               : '<span class="badge">не начато</span>'
       }</td>
+      ${
+        hasCheckColumn
+          ? `<td>${
+              checkVerdicts[s.studentId]
+                ? verdictBadge(checkVerdicts[s.studentId].verdict)
+                : '<span class="muted">—</span>'
+            }</td>`
+          : ""
+      }
       <td class="muted">${activityText}</td>
       <td>${
         s.score !== null && s.score !== undefined
@@ -1264,6 +1405,404 @@ function testSummaryCell(row) {
   const manual = summary.manual > 0 ? ` <span class="muted">+${summary.manual}?</span>` : "";
   return `${summary.correct} / ${summary.total}${manual}`;
 }
+
+// ---------- Automatic checking in the assignment form ----------
+//
+// The teacher fills in fields; the server turns them into the configuration
+// file the checker reads (checks/umlClass.js), and "Показать конфигурацию"
+// shows exactly that file. Nothing here knows what the metrics mean - the
+// fields are named after the criteria and the rest is the checker's business.
+
+let checkReferences = []; // [{ slot, filename, content }]
+const MAX_CHECK_REFERENCES = 3;
+
+const DEFAULT_CHECK_CONFIG = {
+  weights: { c1: 0.2, c2: 0.2, c3: 0.3, c4: 0.1, c5: 0.2 },
+  thresholds: { accept: 0.85, reject: 0.55 },
+  extra_classes_max: 0.3,
+};
+
+// "Клиент: Заказчик, Покупатель" per line -> { Клиент: [Заказчик, Покупатель] }
+function parseSynonymLines(text) {
+  const groups = {};
+  for (const line of String(text || "").split("\n")) {
+    const [head, tail] = line.split(":");
+    const name = (head || "").trim();
+    if (!name || !tail) continue;
+    const members = tail
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (members.length > 0) groups[name] = members;
+  }
+  return groups;
+}
+
+function formatSynonymLines(groups) {
+  return Object.entries(groups || {})
+    .map(([name, members]) => `${name}: ${(members || []).join(", ")}`)
+    .join("\n");
+}
+
+// "Клиент - Счёт" per line -> [["Клиент", "Счёт"]]
+function parseRelationLines(text) {
+  const pairs = [];
+  for (const line of String(text || "").split("\n")) {
+    const parts = line
+      .split(/[-—–]|,/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (parts.length >= 2) pairs.push([parts[0], parts[1]]);
+  }
+  return pairs;
+}
+
+function formatRelationLines(pairs) {
+  return (pairs || []).map((pair) => `${pair[0]} - ${pair[1]}`).join("\n");
+}
+
+function parseNameLines(text) {
+  return String(text || "")
+    .split(/[\n,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function renderCheckRow(existing) {
+  const settings = existing && existing.settings ? existing.settings : null;
+  const config = { ...DEFAULT_CHECK_CONFIG, ...((settings && settings.config) || {}) };
+  const weights = { ...DEFAULT_CHECK_CONFIG.weights, ...(config.weights || {}) };
+  const thresholds = {
+    ...DEFAULT_CHECK_CONFIG.thresholds,
+    ...(config.thresholds || {}),
+  };
+  const enabled = settings ? settings.enabled : false;
+  const problem = existing && existing.problem ? existing.problem : null;
+
+  return `
+    <div class="form-row" id="check-row" style="display:none">
+      <label>Автоматическая проверка</label>
+      <label class="checkbox-label">
+        <input type="checkbox" id="c-enabled"${enabled ? " checked" : ""}>
+        Сравнивать работы с эталонами
+      </label>
+      <span class="muted" style="font-size:12px">
+        Диаграмма ученика сравнивается с каждым эталоном, и по лучшему из них
+        выносится вердикт: «принято», «не принято» или «нужна проверка
+        преподавателя». Оценку проверка не ставит никогда — только показывает,
+        что и где расходится. Ученик видит замечания без текста эталонов.
+      </span>
+      ${
+        problem
+          ? `<div class="form-message error" style="margin-top:6px">${escapeHtml(
+              problem
+            )}</div>`
+          : ""
+      }
+      <div id="check-body" style="margin-top:8px">
+        <div class="check-refs-header">
+          Эталоны — до ${MAX_CHECK_REFERENCES}. Все считаются верными решениями.
+        </div>
+        <div id="check-refs"></div>
+        <div class="file-tree-actions" style="padding:0; margin:6px 0 14px">
+          <button class="secondary" id="check-add-ref" type="button">+ Эталон</button>
+          <button class="secondary" id="check-add-ref-file" type="button"
+                  title="Взять .puml с этого компьютера">+ Эталон из файла</button>
+          <input type="file" id="check-ref-input" accept=".puml,.plantuml,.uml,.wsd,.iuml"
+                 multiple hidden>
+        </div>
+
+        <div class="check-grid">
+          <label class="inline-label">Обязательные классы
+            <textarea id="c-required-classes" rows="3"
+              placeholder="Клиент&#10;Счёт">${escapeHtml(
+                (config.required_classes || []).join("\n")
+              )}</textarea>
+          </label>
+          <label class="inline-label">Обязательные связи
+            <textarea id="c-required-relations" rows="3"
+              placeholder="Клиент - Счёт">${escapeHtml(
+                formatRelationLines(config.required_relations)
+              )}</textarea>
+          </label>
+          <label class="inline-label">Синонимы названий
+            <textarea id="c-synonyms" rows="3"
+              placeholder="Клиент: Заказчик, Покупатель&#10;Счёт: Аккаунт">${escapeHtml(
+                formatSynonymLines(config.synonyms)
+              )}</textarea>
+          </label>
+        </div>
+        <span class="muted" style="font-size:12px">
+          Без обязательного класса или связи работа не принимается. Синонимы —
+          названия, которые считаются тем же самым, по одной группе в строке.
+        </span>
+
+        <div class="check-grid" style="margin-top:12px">
+          <label class="inline-label">Порог принятия
+            <input type="number" id="c-accept" min="0" max="1" step="0.01"
+                   value="${thresholds.accept}">
+          </label>
+          <label class="inline-label">Порог отклонения
+            <input type="number" id="c-reject" min="0" max="1" step="0.01"
+                   value="${thresholds.reject}">
+          </label>
+          <label class="inline-label">Доля лишних классов
+            <input type="number" id="c-extra-max" min="0" max="5" step="0.05"
+                   value="${config.extra_classes_max}">
+          </label>
+        </div>
+        <span class="muted" style="font-size:12px">
+          Сходство считается от 0 до 1. Выше порога принятия — «принято», ниже
+          порога отклонения — «не принято», между ними работа уходит
+          преподавателю. Лишних классов больше указанной доли от эталона —
+          тоже к преподавателю.
+        </span>
+
+        <div class="check-grid" style="margin-top:12px">
+          <label class="inline-label">C1 — классы
+            <input type="number" id="c-w1" min="0" max="1" step="0.05" value="${weights.c1}">
+          </label>
+          <label class="inline-label">C2 — атрибуты
+            <input type="number" id="c-w2" min="0" max="1" step="0.05" value="${weights.c2}">
+          </label>
+          <label class="inline-label">C3 — связи
+            <input type="number" id="c-w3" min="0" max="1" step="0.05" value="${weights.c3}">
+          </label>
+          <label class="inline-label">C4 — типы и кратности
+            <input type="number" id="c-w4" min="0" max="1" step="0.05" value="${weights.c4}">
+          </label>
+          <label class="inline-label">C5 — структура
+            <input type="number" id="c-w5" min="0" max="1" step="0.05" value="${weights.c5}">
+          </label>
+        </div>
+        <div class="muted" style="font-size:12px" id="c-weight-sum"></div>
+
+        <div style="margin-top:10px">
+          <label class="checkbox-label">
+            <input type="checkbox" id="c-check-types"${
+              config.check_types ? " checked" : ""
+            }>
+            Предупреждать о несовпадении типов данных
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="c-check-visibility"${
+              config.check_visibility ? " checked" : ""
+            }>
+            Предупреждать о несовпадении видимости
+          </label>
+          <span class="muted" style="font-size:12px">
+            На вердикт это не влияет: расхождения просто попадают в отчёт
+            преподавателю.
+          </span>
+        </div>
+
+        <div style="margin-top:12px">
+          <button class="secondary" id="check-preview-btn" type="button">
+            Показать конфигурацию
+          </button>
+          <pre id="check-yaml" class="check-yaml" hidden></pre>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderCheckReferences() {
+  const box = document.getElementById("check-refs");
+  if (!box) return;
+
+  if (checkReferences.length === 0) {
+    box.innerHTML =
+      '<p class="muted" style="font-size:12px">Эталонов нет — пока их не добавить, проверка выполняться не будет.</p>';
+  } else {
+    box.innerHTML = checkReferences
+      .map(
+        (reference, index) => `
+        <div class="check-ref">
+          <div class="check-ref-head">
+            <strong>Эталон ${index + 1}</strong>
+            <input class="check-ref-name" data-index="${index}"
+                   value="${escapeHtml(reference.filename)}">
+            <button class="secondary small" data-remove="${index}" type="button">Удалить</button>
+          </div>
+          <textarea class="check-ref-body" data-index="${index}" rows="8"
+                    spellcheck="false">${escapeHtml(reference.content)}</textarea>
+        </div>`
+      )
+      .join("");
+  }
+
+  box.querySelectorAll(".check-ref-body").forEach((area) => {
+    area.oninput = () => {
+      checkReferences[Number(area.dataset.index)].content = area.value;
+    };
+  });
+  box.querySelectorAll(".check-ref-name").forEach((input) => {
+    input.oninput = () => {
+      checkReferences[Number(input.dataset.index)].filename = input.value.trim();
+    };
+  });
+  box.querySelectorAll("[data-remove]").forEach((button) => {
+    button.onclick = () => {
+      checkReferences.splice(Number(button.dataset.remove), 1);
+      renumberReferences();
+      renderCheckReferences();
+    };
+  });
+
+  const addButton = document.getElementById("check-add-ref");
+  const addFileButton = document.getElementById("check-add-ref-file");
+  const full = checkReferences.length >= MAX_CHECK_REFERENCES;
+  if (addButton) addButton.disabled = full;
+  if (addFileButton) addFileButton.disabled = full;
+}
+
+function renumberReferences() {
+  checkReferences.forEach((reference, index) => {
+    reference.slot = `ref_${index + 1}`;
+  });
+}
+
+const EMPTY_REFERENCE = ["@startuml", "", "@enduml", ""].join("\n");
+
+function addCheckReference(content, filename) {
+  if (checkReferences.length >= MAX_CHECK_REFERENCES) return;
+  const slot = `ref_${checkReferences.length + 1}`;
+  checkReferences.push({
+    slot,
+    filename: filename || `${slot}.puml`,
+    content: content === undefined ? EMPTY_REFERENCE : content,
+  });
+  renderCheckReferences();
+}
+
+async function onCheckReferenceFilesChosen(event) {
+  const files = Array.from(event.target.files || []);
+  for (const file of files) {
+    if (checkReferences.length >= MAX_CHECK_REFERENCES) {
+      alert(`Эталонов не больше ${MAX_CHECK_REFERENCES}`);
+      break;
+    }
+    try {
+      addCheckReference(await file.text(), file.name);
+    } catch (err) {
+      alert(`Не удалось прочитать «${file.name}»: ${err.message}`);
+    }
+  }
+  event.target.value = "";
+}
+
+// The fields as the checker's configuration. The server validates it again -
+// this is only so the teacher sees a mistake before saving.
+function collectCheckConfig() {
+  const weights = {
+    c1: Number(document.getElementById("c-w1").value),
+    c2: Number(document.getElementById("c-w2").value),
+    c3: Number(document.getElementById("c-w3").value),
+    c4: Number(document.getElementById("c-w4").value),
+    c5: Number(document.getElementById("c-w5").value),
+  };
+  return {
+    required_classes: parseNameLines(
+      document.getElementById("c-required-classes").value
+    ),
+    required_relations: parseRelationLines(
+      document.getElementById("c-required-relations").value
+    ),
+    synonyms: parseSynonymLines(document.getElementById("c-synonyms").value),
+    weights,
+    thresholds: {
+      accept: Number(document.getElementById("c-accept").value),
+      reject: Number(document.getElementById("c-reject").value),
+    },
+    extra_classes_max: Number(document.getElementById("c-extra-max").value),
+    check_types: document.getElementById("c-check-types").checked,
+    check_visibility: document.getElementById("c-check-visibility").checked,
+  };
+}
+
+function collectCheckSpec() {
+  return {
+    checker: "uml-class",
+    enabled: document.getElementById("c-enabled").checked,
+    config: collectCheckConfig(),
+    references: checkReferences
+      .filter((reference) => reference.content.trim())
+      .map((reference) => ({
+        filename: reference.filename,
+        content: reference.content,
+      })),
+  };
+}
+
+function updateWeightSum() {
+  const box = document.getElementById("c-weight-sum");
+  if (!box) return;
+  const sum = ["c-w1", "c-w2", "c-w3", "c-w4", "c-w5"].reduce(
+    (total, id) => total + Number(document.getElementById(id).value || 0),
+    0
+  );
+  const ok = Math.abs(sum - 1) < 1e-6;
+  box.textContent = ok
+    ? `Сумма весов: ${sum.toFixed(2)}`
+    : `Сумма весов должна быть 1,00, а сейчас ${sum.toFixed(2)}`;
+  box.classList.toggle("error-text", !ok);
+}
+
+function wireCheckRow(existing) {
+  if (!document.getElementById("check-row")) return;
+
+  checkReferences = (
+    (existing && existing.references) ||
+    []
+  ).map((reference, index) => ({
+    slot: reference.slot || `ref_${index + 1}`,
+    filename: reference.filename || `ref_${index + 1}.puml`,
+    content: reference.content || "",
+  }));
+  renderCheckReferences();
+
+  document.getElementById("check-add-ref").onclick = () => addCheckReference();
+  document.getElementById("check-add-ref-file").onclick = () =>
+    document.getElementById("check-ref-input").click();
+  document.getElementById("check-ref-input").onchange = onCheckReferenceFilesChosen;
+
+  ["c-w1", "c-w2", "c-w3", "c-w4", "c-w5"].forEach((id) => {
+    document.getElementById(id).oninput = updateWeightSum;
+  });
+  updateWeightSum();
+
+  const body = document.getElementById("check-body");
+  const enabled = document.getElementById("c-enabled");
+  const applyEnabled = () => {
+    body.style.opacity = enabled.checked ? "1" : "0.55";
+  };
+  enabled.onchange = applyEnabled;
+  applyEnabled();
+
+  const previewButton = document.getElementById("check-preview-btn");
+  const yamlBox = document.getElementById("check-yaml");
+  previewButton.onclick = async () => {
+    previewButton.disabled = true;
+    try {
+      const { configYaml } = await api("/api/checks/preview", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "diagram",
+          assignmentId: editingAssignmentId,
+          check: collectCheckSpec(),
+        }),
+      });
+      yamlBox.textContent = configYaml;
+      yamlBox.hidden = false;
+    } catch (err) {
+      yamlBox.textContent = `Конфигурация неверна: ${err.message}`;
+      yamlBox.hidden = false;
+    } finally {
+      previewButton.disabled = false;
+    }
+  };
+}
+
 
 // ---------- Per-group deadlines and maximum scores ----------
 
@@ -1352,6 +1891,15 @@ async function editActiveAssignment() {
   try {
     // Fetch the full record: the sidebar list doesn't carry starter files.
     const existing = await api(`/api/assignments/${activeAssignment.id}`);
+    // The automatic check lives behind its own endpoint: the assignment
+    // record carries no reference diagrams, and they are teacher-only.
+    if (existing.assignment && existing.assignment.type === "diagram") {
+      try {
+        existing.check = await api(`/api/checks/assignment/${activeAssignment.id}`);
+      } catch {
+        existing.check = null;
+      }
+    }
     renderAssignmentForm(existing);
   } catch (err) {
     alert("Не удалось открыть задание для редактирования: " + err.message);
@@ -1401,6 +1949,9 @@ async function deleteActiveAssignment() {
 async function selectStudent(studentId, displayName, maxScore) {
   activeStudent = { studentId, displayName, maxScore };
   activeVersion = null;
+  // Эталоны кешируются на задание, а не на пару: при переходе к другой
+  // работе кеш больше не про это задание.
+  checkReferenceCache = null;
   renderStudentPanel();
   await Promise.all([
     activeAssignment.type === "freeform"
@@ -1447,23 +1998,58 @@ function renderStudentPanel() {
            </div>
 
            <div class="card">
-             <h3>${activeAssignment.type === "text" ? "Ответ" : "Код"}</h3>
+             <h3>${
+               activeAssignment.type === "text"
+                 ? "Ответ"
+                 : activeAssignment.type === "diagram"
+                   ? "Диаграмма"
+                   : "Код"
+             }</h3>
              ${
                activeAssignment.type === "text"
                  ? '<div class="text-view" id="text-view">Выберите версию, чтобы прочитать ответ.</div>'
                  : `<div class="editor-layout" id="editor-layout">
-                      <div class="file-tree">
-                        <div class="file-tree-header">Проект</div>
-                        <div id="file-list"><p class="muted" style="font-size:12px">—</p></div>
-                      </div>
+                      ${
+                        // У диаграммы один файл - дерево проекта ей не нужно
+                        // ни здесь, ни у ученика.
+                        activeAssignment.type === "diagram"
+                          ? ""
+                          : `<div class="file-tree">
+                               <div class="file-tree-header">Проект</div>
+                               <div id="file-list"><p class="muted" style="font-size:12px">—</p></div>
+                             </div>`
+                      }
                       <div class="editor-wrap" id="editor-container"></div>
                       <div class="binary-note" id="binary-note" hidden></div>
+                      ${
+                        activeAssignment.type === "diagram"
+                          ? `<div class="diagram-pane" id="diagram-pane">
+                               <div class="diagram-pane-header">
+                                 <span id="diagram-title">Отрисовка</span>
+                                 <span class="muted" id="diagram-state"></span>
+                               </div>
+                               <div class="diagram-view" id="diagram-view" hidden></div>
+                               <div class="diagram-empty" id="diagram-empty">
+                                 Выберите версию, чтобы увидеть диаграмму.
+                               </div>
+                               <div class="diagram-errors" id="diagram-errors" hidden></div>
+                             </div>`
+                          : ""
+                      }
                     </div>
-                    <div id="stdin-used"></div>
-                    <div class="output-panel" id="output-panel">Выберите версию, чтобы увидеть вывод программы.</div>`
+                    ${
+                      // A diagram is not run, so there is no input and no output
+                      // to show - the picture is the result.
+                      activeAssignment.type === "diagram"
+                        ? ""
+                        : `<div id="stdin-used"></div>
+                           <div class="output-panel" id="output-panel">Выберите версию, чтобы увидеть вывод программы.</div>`
+                    }`
              }
            </div>`
     }
+
+    ${renderCheckCard()}
 
     <div class="card"${isSurvey() ? ' hidden' : ""}>
       <h3>Оценка</h3>
@@ -1512,8 +2098,12 @@ function renderStudentPanel() {
   document.getElementById("message-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") sendMessage();
   });
-  // Only code assignments need the Monaco viewer.
-  if (activeAssignment.type === "code") setupViewer();
+  // Code and diagrams are both read in Monaco; a text answer and attachments
+  // are not.
+  if (activeAssignment.type === "code" || activeAssignment.type === "diagram") {
+    setupViewer();
+  }
+  wireCheckCard();
 }
 
 // Free-form work: the student's attachments, downloadable but not editable.
@@ -1608,6 +2198,13 @@ async function openVersion(v) {
   } catch {
     viewerFiles = [{ filename: "Main.java", content: v.code, isEntry: 1 }];
   }
+  // The pictures that were stored with this version. Nothing is re-rendered
+  // here: what the teacher marks is what the student handed in.
+  if (activeAssignment.type === "diagram") {
+    await loadVersionRenders(v.id);
+    await loadCheckForVersion(v.id);
+  }
+
   const entry = viewerFiles.find((f) => f.isEntry) || viewerFiles[0];
   showFile(entry.filename);
   renderStdinUsed(v.stdin);
@@ -1615,10 +2212,246 @@ async function openVersion(v) {
   loadVersions();
 }
 
+// ---------- Automatic checking on the review screen ----------
+//
+// What the teacher sees next to the work: the verdict of the version they are
+// looking at, the whole report behind it, and - folded away - the reference
+// the checker thought closest. The verdict is never a mark: the grade box
+// above is untouched by it, and nothing here writes to it.
+
+let checkReferenceCache = null; // эталоны задания вместе с отрисовкой
+
+function renderCheckCard() {
+  // Карточка существует только у диаграмм: больше проверять пока нечего.
+  if (activeAssignment.type !== "diagram") return "";
+  return `
+    <div class="card check-card" id="check-card" hidden>
+      <h3>Автоматическая проверка</h3>
+      <div class="check-head">
+        <span id="check-verdict"></span>
+        <span class="muted" style="font-size:12px" id="check-meta"></span>
+        <button class="secondary small" id="check-rerun-btn" type="button">
+          Проверить эту версию
+        </button>
+      </div>
+      <div class="check-report" id="check-report"></div>
+      <div id="check-reference"></div>
+    </div>`;
+}
+
+function wireCheckCard() {
+  const button = document.getElementById("check-rerun-btn");
+  if (!button) return;
+  button.onclick = async () => {
+    if (!activeVersion) return alert("Выберите версию работы");
+    button.disabled = true;
+    const label = button.textContent;
+    button.textContent = "Проверяю…";
+    try {
+      const { run } = await api("/api/checks/run", {
+        method: "POST",
+        body: JSON.stringify({ submissionId: activeVersion.id }),
+      });
+      showCheckRun(run);
+    } catch (err) {
+      alert("Не удалось проверить: " + err.message);
+    } finally {
+      button.disabled = false;
+      button.textContent = label;
+    }
+  };
+}
+
+// Прогон той версии, которая открыта. Если её ещё не проверяли, карточка так
+// и говорит - и остаётся кнопка.
+async function loadCheckForVersion(submissionId) {
+  const card = document.getElementById("check-card");
+  if (!card) return;
+  try {
+    const { configured, run } = await api(
+      `/api/checks/runs/submission/${submissionId}`
+    );
+    if (!configured) {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    showCheckRun(run);
+  } catch {
+    card.hidden = true;
+  }
+}
+
+function showCheckRun(run) {
+  const card = document.getElementById("check-card");
+  const verdict = document.getElementById("check-verdict");
+  const meta = document.getElementById("check-meta");
+  const report = document.getElementById("check-report");
+  const reference = document.getElementById("check-reference");
+  if (!card) return;
+  card.hidden = false;
+
+  if (!run) {
+    verdict.innerHTML = '<span class="verdict">не проверялась</span>';
+    meta.textContent = "";
+    report.innerHTML =
+      '<p class="muted">Эту версию автоматическая проверка ещё не смотрела.</p>';
+    reference.innerHTML = "";
+    return;
+  }
+
+  verdict.innerHTML = verdictBadge(run.verdict);
+  const parts = [];
+  if (run.score !== null && run.score !== undefined) {
+    parts.push(`сходство ${Number(run.score).toFixed(3)}`);
+  }
+  if (run.report && run.report.best_reference) {
+    parts.push(`ближайший эталон: ${run.report.best_reference}`);
+  }
+  parts.push(new Date(run.createdAt).toLocaleString());
+  if (run.initiatedBy === "submit") parts.push("при сдаче");
+  if (run.initiatedBy === "student") parts.push("по просьбе ученика");
+  meta.textContent = parts.join(" · ");
+
+  report.innerHTML = run.error
+    ? `<p class="error-text">${escapeHtml(run.error)}</p>`
+    : // Первая строка отчёта - заголовок с вердиктом, а вердикт уже стоит
+      // значком выше; второй раз он здесь не нужен.
+      renderCheckMarkdown(
+        String(run.teacherReport || "").replace(/^#[^\n]*\n/, "")
+      );
+
+  showCheckReference(run);
+}
+
+// Эталон, с которым работу сравнили. Открывается по щелчку: это материал
+// преподавателя, и на экране он не нужен постоянно.
+async function showCheckReference(run) {
+  const box = document.getElementById("check-reference");
+  if (!box) return;
+  const best = run.report && run.report.best_reference;
+  if (!best) {
+    box.innerHTML = "";
+    return;
+  }
+
+  box.innerHTML = `
+    <details class="check-reference">
+      <summary>Показать эталон ${escapeHtml(best)}</summary>
+      <div id="check-reference-body" class="diagram-view">Загрузка…</div>
+    </details>`;
+
+  const details = box.querySelector("details");
+  details.ontoggle = async () => {
+    if (!details.open) return;
+    const body = document.getElementById("check-reference-body");
+    if (!checkReferenceCache) {
+      try {
+        // render=1: отрисовка делается один раз и сохраняется вместе с
+        // эталоном, так что в следующий раз картинка уже готова.
+        const data = await api(
+          `/api/checks/assignment/${activeAssignment.id}?render=1`
+        );
+        checkReferenceCache = data.references || [];
+      } catch (err) {
+        body.textContent = "Не удалось загрузить эталон: " + err.message;
+        return;
+      }
+    }
+    const found = checkReferenceCache.find(
+      (reference) => reference.slot === best
+    );
+    if (!found) {
+      body.textContent = "Эталон не найден — возможно, его заменили.";
+      return;
+    }
+    if (found.svg) {
+      body.innerHTML = `<img alt="Эталон ${escapeHtml(best)}" src="${svgToDataUrl(
+        found.svg
+      )}">`;
+    } else {
+      body.innerHTML = `<pre class="check-yaml">${escapeHtml(found.content)}</pre>
+        <p class="muted" style="font-size:12px">${escapeHtml(
+          found.renderError || "Эталон не отрисован — показан его текст."
+        )}</p>`;
+    }
+  };
+}
+
+
+// ---------- Diagram assignments: the third pane ----------
+//
+// The teacher never renders anything: a version carries its own pictures, so
+// reviewing works whether or not the renderer is running, and shows the
+// diagram as it was handed in rather than as it would draw today.
+
+let versionRenders = new Map(); // filename -> { svg, error }
+
+async function loadVersionRenders(submissionId) {
+  versionRenders = new Map();
+  try {
+    const { renders } = await api(`/api/submissions/${submissionId}/renders`);
+    for (const render of renders) {
+      versionRenders.set(render.filename, {
+        svg: render.svg || null,
+        error: render.error || null,
+      });
+    }
+  } catch {
+    // The pane says "нет отрисовки" below, which is the honest outcome.
+  }
+}
+
+// Same trick as on the student's side: the picture goes into an <img>, where a
+// script inside someone else's SVG cannot reach the page around it.
+function svgToDataUrl(svg) {
+  const bytes = new TextEncoder().encode(svg);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `data:image/svg+xml;base64,${btoa(binary)}`;
+}
+
+function showDiagramFor(filename) {
+  const view = document.getElementById("diagram-view");
+  const empty = document.getElementById("diagram-empty");
+  const errors = document.getElementById("diagram-errors");
+  const title = document.getElementById("diagram-title");
+  if (!view || !empty || !errors) return;
+  if (title) title.textContent = filename || "Отрисовка";
+
+  const render = filename ? versionRenders.get(filename) : null;
+  if (!render || !render.svg) {
+    view.hidden = true;
+    view.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = render
+      ? "Диаграмма не отрисовалась — см. сообщение ниже."
+      : "Для этого файла в версии нет отрисовки.";
+  } else {
+    view.innerHTML = `<img alt="Диаграмма ${escapeHtml(filename)}" src="${svgToDataUrl(
+      render.svg
+    )}">`;
+    view.hidden = false;
+    empty.hidden = true;
+  }
+
+  if (render && render.error) {
+    errors.textContent = render.error;
+    errors.hidden = false;
+  } else {
+    errors.textContent = "";
+    errors.hidden = true;
+  }
+}
+
 function showFile(filename) {
   const file = viewerFiles.find((f) => f.filename === filename) || viewerFiles[0];
   if (!file) return;
   viewerFile = file.filename;
+
+  // The render pane follows the open file, the same way it does for the
+  // student: one .puml, one diagram.
+  if (activeAssignment.type === "diagram") showDiagramFor(file.filename);
 
   // A data file the student's program produced may be binary (a serialised
   // object), and there is nothing to read in it - offer the download instead.
@@ -1631,6 +2464,13 @@ function showFile(filename) {
       note.innerHTML = `<strong>${escapeHtml(file.filename)}</strong> — двоичный файл,
         ${formatSize(fileSizeOf(file))}. Показать как текст нечего;
         скачайте его кнопкой «↓» в дереве проекта.`;
+    } else if (!viewerEditor) {
+      // Monaco comes from a CDN; when it fails to load the review should still
+      // show the file tree, the diagram and the mark rather than nothing.
+      note.hidden = false;
+      wrap.hidden = true;
+      note.innerHTML = `<strong>${escapeHtml(file.filename)}</strong> — редактор не
+        загрузился. Содержимое файла можно скачать кнопкой «↓» в дереве проекта.`;
     } else {
       note.hidden = true;
       wrap.hidden = false;
@@ -1661,7 +2501,8 @@ function renderViewerTree() {
     div.appendChild(name);
     if (!isJavaFile(file.filename)) appendDataControls(div, file);
     // Shows which file the student ran, so the reviewer starts in the right place.
-    if (file.isEntry) {
+    // A diagram project has no entry point: every .puml stands on its own.
+    if (file.isEntry && activeAssignment.type !== "diagram") {
       const badge = document.createElement("span");
       badge.className = "entry-badge";
       badge.textContent = "main";

@@ -49,6 +49,121 @@ const DEFAULT_EDITOR_HEIGHT = 420;
 const MIN_EDITOR_HEIGHT = 200;
 const MAX_EDITOR_HEIGHT = 1400;
 
+// ---------------------------------------------------------------------
+// Automatic checking: wording and the report
+//
+// The checker writes its reports in markdown (see checker/README.md) - the
+// same text works in a terminal, in a file and here. What reaches the screen
+// is a handful of elements, so it is rendered by hand rather than by pulling
+// in a markdown library: headings, lists, tables, bold and inline code, and
+// nothing else gets through.
+// ---------------------------------------------------------------------
+
+const CHECK_VERDICT_LABEL = {
+  accepted: "принято",
+  rejected: "не принято",
+  needs_review: "нужна проверка преподавателя",
+  error: "проверка не выполнена",
+};
+
+function verdictLabel(verdict) {
+  return CHECK_VERDICT_LABEL[verdict] || verdict || "";
+}
+
+function verdictBadge(verdict) {
+  if (!verdict) return "";
+  return `<span class="verdict ${verdict}">${escapeHtmlShared(
+    verdictLabel(verdict)
+  )}</span>`;
+}
+
+// escapeHtml lives in both dashboards; ui.js is loaded before them, so it
+// carries its own copy under a name that cannot collide.
+function escapeHtmlShared(str) {
+  return String(str == null ? "" : str).replace(
+    /[&<>"']/g,
+    (ch) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]
+  );
+}
+
+function inlineMarkdown(text) {
+  return escapeHtmlShared(text)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/&lt;sub&gt;(.*?)&lt;\/sub&gt;/g, "<sub>$1</sub>");
+}
+
+function renderCheckMarkdown(markdown) {
+  const lines = String(markdown || "").split("\n");
+  const out = [];
+  let list = null;
+  let table = null;
+
+  const closeList = () => {
+    if (list) {
+      out.push(`<ul>${list.join("")}</ul>`);
+      list = null;
+    }
+  };
+  const closeTable = () => {
+    if (table) {
+      const [head, ...body] = table;
+      out.push(
+        `<table><thead><tr>${head
+          .map((cell) => `<th>${inlineMarkdown(cell)}</th>`)
+          .join("")}</tr></thead><tbody>${body
+          .map(
+            (row) =>
+              `<tr>${row.map((cell) => `<td>${inlineMarkdown(cell)}</td>`).join("")}</tr>`
+          )
+          .join("")}</tbody></table>`
+      );
+      table = null;
+    }
+  };
+
+  for (const raw of lines) {
+    const line = raw.trim();
+
+    if (line.startsWith("|")) {
+      const cells = line
+        .split("|")
+        .slice(1, -1)
+        .map((cell) => cell.trim());
+      // The |---|---| separator row carries no data.
+      if (cells.every((cell) => /^:?-{2,}:?$/.test(cell))) continue;
+      closeList();
+      if (!table) table = [];
+      table.push(cells);
+      continue;
+    }
+    closeTable();
+
+    if (!line) {
+      closeList();
+      continue;
+    }
+    if (line.startsWith("- ")) {
+      if (!list) list = [];
+      list.push(`<li>${inlineMarkdown(line.slice(2))}</li>`);
+      continue;
+    }
+    closeList();
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      const level = Math.min(3, heading[1].length + 1);
+      out.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+    out.push(`<p>${inlineMarkdown(line)}</p>`);
+  }
+  closeList();
+  closeTable();
+  return out.join("");
+}
+
 function clampEditorHeight(px) {
   return Math.min(MAX_EDITOR_HEIGHT, Math.max(MIN_EDITOR_HEIGHT, Math.round(px)));
 }

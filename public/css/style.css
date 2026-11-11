@@ -652,6 +652,13 @@ button.small { padding: 4px 10px; font-size: 12px; }
   align-items: stretch;
 }
 .editor-layout .editor-wrap { flex: 1; min-width: 0; }
+/* With a render pane beside it the editor shares the room instead of being
+   squeezed into the leftovers, and neither half may shrink out of use. */
+/* Editor and picture share what is left beside the tree, evenly. They stay in
+   one row on purpose: the grip under the layout sets its height, and a wrapped
+   second row would spill out of it. */
+.editor-layout:has(.diagram-pane) .editor-wrap { flex: 1 1 0; min-width: 200px; }
+.editor-layout .diagram-pane { flex: 1 1 0; min-width: 200px; }
 
 /* A layout the user can drag taller or shorter (see js/ui.js). The height
    lives on the layout, and the tree and the editor follow it, so both sides
@@ -872,6 +879,65 @@ button.secondary.danger:hover { border-color: var(--error); color: var(--error);
 .type-badge.type-code { color: var(--accent); border-color: var(--accent-dim); }
 .type-badge.type-text { color: #8ba7d9; border-color: #4a5b7d; }
 .type-badge.type-freeform { color: var(--warn); border-color: #7d5a44; }
+.type-badge.type-diagram { color: #c6a0e8; border-color: #6a4e85; }
+
+/* --- Diagram assignments: the third pane --- */
+.diagram-pane {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+.diagram-pane-header {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+/* The picture itself. A rendered diagram can be any size, so the pane scrolls
+   rather than stretching the page. */
+.diagram-view {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 10px;
+  /* PlantUML draws on white; keeping that makes the diagram readable instead
+     of fighting the dark theme. */
+  background: #ffffff;
+}
+.diagram-view img { display: block; max-width: 100%; }
+/* [hidden] is only a default of display:none, and a rule with a class beats
+   it - so the placeholder needs to be told explicitly to go away. */
+.diagram-empty[hidden],
+.diagram-view[hidden],
+.diagram-errors[hidden] { display: none; }
+.diagram-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 16px;
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+  background: var(--bg-panel);
+}
+/* Diagnostics under the picture, in the same place the console sits for code. */
+.diagram-errors {
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  color: var(--error);
+}
 
 /* --- Text assignments --- */
 .text-editor {
@@ -1091,3 +1157,123 @@ button.secondary.danger:hover { border-color: var(--error); color: var(--error);
 .test-answer-options li.chosen { color: var(--text); font-weight: 600; }
 .test-answer-options li.is-correct { color: var(--accent); }
 .test-answer-options li.chosen.is-correct { color: var(--accent); font-weight: 600; }
+
+/* --- Automatic checking --- */
+/* The assignment form: criteria side by side, so the whole configuration fits
+   on one screen instead of a column of lonely fields. */
+.check-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+}
+.check-grid > .inline-label { flex: 1 1 180px; min-width: 150px; }
+.check-grid > .inline-label > textarea {
+  align-self: stretch;
+  font-size: 13px;
+  resize: vertical;
+}
+.check-refs-header { font-size: 12px; color: var(--text-dim); }
+.check-ref {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 8px 0;
+  background: var(--bg-panel-raised);
+}
+.check-ref-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.check-ref-head .check-ref-name { flex: 1 1 160px; max-width: 260px; }
+.check-ref-body {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+}
+.check-yaml {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel-raised);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  max-height: 320px;
+  overflow: auto;
+}
+.check-yaml[hidden] { display: none; }
+.error-text { color: var(--error); }
+button.small { padding: 3px 8px; font-size: 12px; }
+
+/* The verdict, wherever it is shown: one word that has to be readable at a
+   glance in a list of works. */
+.verdict {
+  display: inline-block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+.verdict.accepted { color: var(--accent); border-color: #3f6b4a; }
+.verdict.rejected { color: var(--error); border-color: #7d4444; }
+.verdict.needs_review { color: var(--warn); border-color: #7d6a44; }
+.verdict.error { color: var(--text-dim); }
+
+/* The report itself - markdown rendered to a few plain elements. */
+.check-card { margin-top: 10px; }
+.check-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.check-report {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.check-report h1,
+.check-report h2,
+.check-report h3 {
+  font-size: 13px;
+  margin: 10px 0 4px;
+  color: var(--text);
+}
+.check-report ul { margin: 4px 0; padding-left: 18px; }
+.check-report code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-panel-raised);
+  border-radius: 4px;
+  padding: 0 3px;
+}
+.check-report table { border-collapse: collapse; margin: 6px 0; font-size: 12px; }
+.check-report th,
+.check-report td {
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  text-align: left;
+}
+.check-report sub { color: var(--text-dim); font-size: 11px; }
+.check-reference {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.check-reference > summary {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.check-reference .diagram-view { max-height: 420px; }
