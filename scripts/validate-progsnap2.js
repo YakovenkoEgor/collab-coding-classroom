@@ -171,6 +171,16 @@ function checkEvents(root, meta) {
   for (const col of REQUIRED_COLUMNS) {
     if (!header.includes(col)) fail(`MainTable.csv: нет обязательной колонки ${col}`);
   }
+  
+  for (const row of rows) {
+    const offenders = header.filter((col) => /[\r\n]/.test(row[col] || ""));
+    if (offenders.length > 0) {
+      fail(
+        `событие ${row.EventID || "(без EventID)"}: перевод строки внутри значения ` +
+          `(${offenders.join(", ")}) — строка таблицы перестала быть одной строкой файла`
+      );
+    }
+  }
 
   const eventIds = new Set(rows.map((row) => row.EventID));
   const seenIds = new Set();
