@@ -11,11 +11,13 @@ const {
 const rules = require("../assignmentRules");
 const progsnap = require("../progsnap");
 const projectFiles = require("../projectFiles");
+const plantuml = require("../plantuml");
 const testing = require("../testing");
+const checks = require("../checks");
 
 const router = express.Router();
 
-const ASSIGNMENT_TYPES = ["code", "text", "freeform", "test"];
+const ASSIGNMENT_TYPES = ["code", "text", "freeform", "test", "diagram"];
 const MAX_STARTER_FILES = 20;
 
 function normalizeType(type) {
@@ -47,6 +49,26 @@ const HAS_SUBMITTED_SQL = `
 const DEFAULT_STARTER =
   "public class Main {\n    public static void main(String[] args) {\n        \n    }\n}\n";
 
+// What a diagram assignment opens with: a valid diagram with two classes, so
+// the student starts from something that renders rather than a blank file.
+const DEFAULT_DIAGRAM_STARTER = [
+  "@startuml",
+  "",
+  "class Animal {",
+  "  - String name",
+  "  + void speak()",
+  "}",
+  "",
+  "class Dog {",
+  "  + void speak()",
+  "}",
+  "",
+  "Animal <|-- Dog",
+  "",
+  "@enduml",
+  "",
+].join("\n");
+
 function starterFilesFor(assignmentId) {
   return db
     .prepare(
@@ -59,7 +81,8 @@ function starterFilesFor(assignmentId) {
 
 // Normalises the starter project from the request. Accepts the multi-file
 // shape, and still understands the old single-textarea `starterCode`.
-function readStarterProject(body) {
+function readStarterProject(body, assignmentType = "code") {
+  const wantsDiagram = assignmentType === "diagram";
   if (Array.isArray(body.starterFiles) && body.starterFiles.length > 0) {
     if (body.starterFiles.length > MAX_STARTER_FILES) {
       throw new SandboxError(
@@ -93,19 +116,45 @@ function readStarterProject(body) {
       seen.add(file.filename);
     }
 
-    const javaFiles = files.filter((f) => projectFiles.isJavaFile(f.filename));
-    if (javaFiles.length === 0) {
-      throw new SandboxError("В стартовом проекте нужен хотя бы один файл .java");
+    // A diagram project is built from .puml files, a code project from .java.
+    const sources = files.filter((f) =>
+      wantsDiagram
+        ? plantuml.isDiagramFile(f.filename)
+        : projectFiles.isJavaFile(f.filename)
+    );
+    if (sources.length === 0) {
+      throw new SandboxError(
+        wantsDiagram
+          ? "В стартовом проекте нужен хотя бы один файл диаграммы (.puml)"
+          : "В стартовом проекте нужен хотя бы один файл .java"
+      );
     }
 
-    // The entry is what the student's Run starts from, so it has to be a
-    // source file even if the teacher had a data file selected in the form.
+    // For code the entry is what Run starts from. A diagram has no entry -
+    // every .puml is a diagram in its own right - but the slot is filled all
+    // the same, so a project has the same shape whatever its type.
     const chosen = files.find((f) => f.filename === body.starterEntry);
-    const entry =
-      chosen && projectFiles.isJavaFile(chosen.filename)
-        ? chosen.filename
-        : javaFiles[0].filename;
+    const chosenIsSource =
+      chosen &&
+      (wantsDiagram
+        ? plantuml.isDiagramFile(chosen.filename)
+        : projectFiles.isJavaFile(chosen.filename));
+    const entry = chosenIsSource ? chosen.filename : sources[0].filename;
+
+    // A diagram assignment is one .puml: the student's editor has no file tree
+    // for it, so a second file would be handed out invisibly and handed back
+    // unchanged. Only the entry diagram is kept.
+    if (wantsDiagram) {
+      return { files: files.filter((f) => f.filename === entry), entry };
+    }
     return { files, entry };
+  }
+
+  if (wantsDiagram) {
+    return {
+      files: [{ filename: "diagram.puml", content: DEFAULT_DIAGRAM_STARTER }],
+      entry: "diagram.puml",
+    };
   }
 
   const code =
@@ -113,6 +162,45 @@ function readStarterProject(body) {
       ? body.starterCode
       : DEFAULT_STARTER;
   return { files: [{ filename: "Main.java", content: code }], entry: "Main.java" };
+}
+
+// Коротко о настроенной проверке - столько, сколько нужно форме задания и
+// экрану проверки. Подробности (конфигурация, эталоны) отдаёт /api/checks.
+// Вердикт последнего прогона по каждому ученику задания: { studentId: ... }.
+// Пусто, если проверка на задании не настроена.
+function checkVerdictsFor(assignmentId) {
+  const settings = checks.settingsFor(assignmentId);
+  if (!settings || !settings.enabled) return {};
+  // Только прогоны по сохранённым версиям: проверки, которые ученик запускал
+  // сам из редактора, к сданной работе отношения не имеют, и показывать их
+  // в списке работ значило бы говорить о работе не то.
+  const rows = db
+    .prepare(
+      `SELECT student_id AS studentId, verdict, score
+       FROM check_runs
+       WHERE id IN (
+         SELECT MAX(id) FROM check_runs
+         WHERE assignment_id = ? AND student_id IS NOT NULL
+           AND submission_id IS NOT NULL
+         GROUP BY student_id
+       )`
+    )
+    .all(assignmentId);
+  const byStudent = {};
+  for (const row of rows) {
+    byStudent[row.studentId] = { verdict: row.verdict, score: row.score };
+  }
+  return byStudent;
+}
+
+function checkSummary(assignmentId) {
+  const settings = checks.settingsFor(assignmentId);
+  if (!settings) return null;
+  return {
+    checker: settings.checker,
+    enabled: settings.enabled,
+    referenceCount: checks.referencesFor(assignmentId).length,
+  };
 }
 
 function filesForAssignment(assignmentId) {
@@ -482,6 +570,45 @@ function gradesAboveNewMax(assignmentId, groupRules) {
 // The test part of the payload, for an assignment of type "test": its kind
 // (graded or survey), how long one attempt may last, when solving opens, and
 // the questions themselves.
+// Автоматическая проверка задания: какой проверяльщик включён, с какой
+// конфигурацией и по каким эталонам (см. checks/). Отсутствие поля "check" в
+// запросе означает "оставить как есть", а check: null - "выключить и убрать".
+function readCheckSpec(body, assignmentType) {
+  if (body.check === undefined) return undefined;
+  if (body.check === null) return null;
+
+  const given = body.check && typeof body.check === "object" ? body.check : {};
+  const available = checks.catalogFor(assignmentType);
+  if (available.length === 0) {
+    throw new SandboxError(
+      "Для этого типа задания автоматическая проверка не предусмотрена"
+    );
+  }
+  const checkerId = String(given.checker || available[0].id);
+  const checker = checks.checkerById(checkerId);
+  if (!checker || !checker.APPLIES_TO.includes(assignmentType)) {
+    throw new SandboxError(`Неизвестная проверка «${checkerId}»`);
+  }
+
+  try {
+    return {
+      checker: checker.ID,
+      enabled: given.enabled === undefined ? true : !!given.enabled,
+      config: checker.validateConfig(given.config, { taskId: given.taskId }),
+      // Эталоны приходят вместе с конфигурацией и заменяют прежние целиком.
+      references:
+        given.references === undefined
+          ? undefined
+          : checker.validateReferences(given.references),
+    };
+  } catch (err) {
+    if (err instanceof checker.CheckConfigError) {
+      throw new SandboxError(err.message);
+    }
+    throw err;
+  }
+}
+
 function readTestSpec(body) {
   const testKind = testing.normalizeKind(body.testKind);
   return {
@@ -508,13 +635,17 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
   let networkAccess = 0;
   let starter = null;
   let test = null;
+  let check;
   try {
     assignmentType = normalizeType(req.body.type);
     groupRules = readGroupRules(req.body);
+    check = readCheckSpec(req.body, assignmentType);
     networkAccess = readNetworkAccess(req.body.networkAccess, assignmentType);
     // Only code assignments carry a Java starter project. A text assignment's
     // starter is the text the student begins from; free-form has none.
-    if (assignmentType === "code") starter = readStarterProject(req.body);
+    if (assignmentType === "code" || assignmentType === "diagram") {
+      starter = readStarterProject(req.body, assignmentType);
+    }
     if (assignmentType === "test") {
       test = readTestSpec(req.body);
       // A brand new test has to come with its questions.
@@ -575,6 +706,12 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
 
       rules.replaceRules(info.lastInsertRowid, groupRules);
       if (test && test.questions) testing.replaceQuestions(info.lastInsertRowid, test.questions);
+      if (check) {
+        checks.saveSettings(info.lastInsertRowid, check);
+        if (check.references !== undefined) {
+          checks.replaceReferences(info.lastInsertRowid, check.references);
+        }
+      }
 
       const insertStarter = db.prepare(
         `INSERT INTO assignment_starter_files
@@ -617,6 +754,7 @@ router.post("/", requireLogin, requireRole("teacher"), (req, res) => {
       files: filesForAssignment(assignmentId),
       starterFiles: starterFilesFor(assignmentId),
       groupRules: rules.rulesForAssignment(assignmentId),
+      check: checkSummary(assignmentId),
     });
   } catch (err) {
     // Don't leave orphaned files on disk if the database write fails.
@@ -643,8 +781,10 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
   let groupRules;
   let networkAccess = 0;
   let test = null;
+  let check;
   try {
     assignmentType = req.body.type === undefined ? assignment.type : normalizeType(req.body.type);
+    check = readCheckSpec(req.body, assignmentType);
     // Leaving groupRules out of the request keeps the current exceptions;
     // sending an empty list clears them.
     groupRules =
@@ -658,7 +798,9 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
         : req.body.networkAccess,
       assignmentType
     );
-    if (assignmentType === "code") starter = readStarterProject(req.body);
+    if (assignmentType === "code" || assignmentType === "diagram") {
+      starter = readStarterProject(req.body, assignmentType);
+    }
     if (assignmentType === "test") test = readTestSpec(req.body);
   } catch (err) {
     if (
@@ -771,6 +913,15 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
 
       rules.replaceRules(assignment.id, groupRules);
       if (test && test.questions) testing.replaceQuestions(assignment.id, test.questions);
+      if (check === null) {
+        checks.clearSettings(assignment.id);
+        checks.replaceReferences(assignment.id, []);
+      } else if (check) {
+        checks.saveSettings(assignment.id, check);
+        if (check.references !== undefined) {
+          checks.replaceReferences(assignment.id, check.references);
+        }
+      }
 
       db.prepare("DELETE FROM assignment_starter_files WHERE assignment_id = ?").run(
         assignment.id
@@ -821,6 +972,7 @@ router.put("/:id", requireLogin, requireRole("teacher"), (req, res) => {
       files: filesForAssignment(assignment.id),
       starterFiles: starterFilesFor(assignment.id),
       groupRules: rules.rulesForAssignment(assignment.id),
+      check: checkSummary(assignment.id),
     });
   } catch (err) {
     storedFiles.forEach((f) => storage.removeFile(f.storedName));
@@ -850,6 +1002,14 @@ router.delete("/:id", requireLogin, requireRole("teacher"), (req, res) => {
          (SELECT id FROM discussions WHERE assignment_id = ?)`
     ).run(assignment.id);
     db.prepare("DELETE FROM discussions WHERE assignment_id = ?").run(assignment.id);
+    // Прогоны проверок ссылаются на версии работ, поэтому уходят раньше них.
+    db.prepare("DELETE FROM check_runs WHERE assignment_id = ?").run(assignment.id);
+    db.prepare("DELETE FROM assignment_checks WHERE assignment_id = ?").run(
+      assignment.id
+    );
+    db.prepare("DELETE FROM assignment_reference_files WHERE assignment_id = ?").run(
+      assignment.id
+    );
     db.prepare(
       `DELETE FROM submission_files WHERE submission_id IN
          (SELECT id FROM submissions WHERE assignment_id = ?)`
@@ -1034,6 +1194,10 @@ router.get(
       }),
       groupRules: rules.rulesForAssignment(req.params.id),
       testKind: isTest ? assignment.testKind : null,
+      // Последний вердикт автопроверки по каждому ученику: по списку сразу
+      // видно, чьи работы автомат разобрать не смог. Это не оценка - оценка
+      // по-прежнему ставится руками, в колонке рядом.
+      checkVerdicts: checkVerdictsFor(req.params.id),
     });
   }
 );

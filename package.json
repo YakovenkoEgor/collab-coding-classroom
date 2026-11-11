@@ -9,7 +9,9 @@
     "backup": "node scripts/backup-db.js",
     "reset": "node scripts/clear-classroom-data.js",
     "export:progsnap": "node scripts/export-progsnap2.js",
-    "validate:progsnap": "node scripts/validate-progsnap2.js"
+    "validate:progsnap": "node scripts/validate-progsnap2.js",
+    "setup:checker": "node scripts/setup-checker.js",
+    "test:checker": "node scripts/setup-checker.js --test"
   },
   "dependencies": {
     "express": "^4.19.2",

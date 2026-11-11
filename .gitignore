@@ -70,3 +70,9 @@ Desktop.ini
 # --- Local tooling / working notes (not part of the project itself) ---
 .claude/
 CONTEXT_FOR_CLAUDE_CODE.md
+
+# --- Python-окружение проверяльщиков (checker/requirements.txt его описывает) ---
+checker/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

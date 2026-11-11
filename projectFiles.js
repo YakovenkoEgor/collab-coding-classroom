@@ -30,6 +30,9 @@ const DATA_EXTENSIONS = [
   "json", "xml", "yaml", "yml",
   "ini", "cfg", "conf", "config", "properties", "props", "env",
   "lst", "list",
+  // Diagram sources. On a diagram assignment these are the work itself rather
+  // than data beside it, but the name rules are the same (see plantuml.js).
+  "puml", "plantuml", "uml", "wsd", "iuml",
 ];
 
 // No directories, no dot-files, no leading dash; printable ASCII only. Length

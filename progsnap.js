@@ -65,6 +65,7 @@ const EventType = {
   X_TEST_START: "X-Test.Start",
   X_TEST_SUBMIT: "X-Test.Submit",
   X_SANDBOX_ERROR: "X-Sandbox.Error",
+  X_CHECK_RUN: "X-Check.Run",
 };
 
 // ExecutionResult is an enum of four values; the sandbox has its own, richer
@@ -348,6 +349,65 @@ function logVersion({
   }
 }
 
+// EventInitiator is an enum of eight values; the platform's own three reasons
+// for running a check map onto three of them.
+const CHECK_INITIATORS = {
+  student: "UserDirectAction",
+  submit: "ToolReaction",
+  teacher: "InstructorDirectAction",
+};
+
+// A run of an automatic check (see checks/). There is no standard event type
+// for this, so it carries the X- prefix the specification reserves for
+// dataset-specific ones.
+//
+// Score holds what the checker measured, already between 0 and 1 - for the
+// diagram checker that is similarity to the closest reference, not a mark.
+// The verdict itself is a value of its own, so it goes in an X- column.
+function logCheck({
+  subjectId,
+  sessionId,
+  assignmentId,
+  submissionId,
+  codeStateId,
+  codeStateSection,
+  checker,
+  verdict,
+  score,
+  configHash,
+  toolVersion,
+  initiatedBy,
+  error,
+}) {
+  if (!ENABLED) return null;
+  try {
+    return logEvent({
+      eventType: EventType.X_CHECK_RUN,
+      subjectId,
+      sessionId,
+      assignmentId,
+      submissionId,
+      codeStateId,
+      codeStateSection,
+      // Who caused this run, in the specification's own enum: the student
+      // pressing "Проверить", the platform reacting to a submission, or the
+      // teacher asking for a re-run.
+      eventInitiator: CHECK_INITIATORS[initiatedBy] || "UserIndirectAction",
+      score: score === null || score === undefined ? null : Number(score),
+      extra: {
+        "X-CheckName": checker || "",
+        "X-CheckVerdict": verdict || "",
+        "X-CheckConfigHash": configHash || "",
+        "X-CheckToolVersion": toolVersion || "",
+        ...(error ? { "X-CheckError": clip(error) } : {}),
+      },
+    });
+  } catch (err) {
+    console.error("[progsnap] не удалось записать проверку:", err.message);
+    return null;
+  }
+}
+
 // Score is normalised to 0..1 by the specification, and the maximum here can
 // differ per study group, so the caller passes the maximum that applied.
 function normalizeScore(score, maxScore) {
@@ -379,6 +439,7 @@ module.exports = {
   logEvent,
   logRun,
   logVersion,
+  logCheck,
   normalizeScore,
   executionResultFor,
 };

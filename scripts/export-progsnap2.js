@@ -185,6 +185,11 @@ function buildDataset(args) {
     "X-TestKind",
     "X-RawScore",
     "X-MaxScore",
+    "X-CheckName",
+    "X-CheckVerdict",
+    "X-CheckConfigHash",
+    "X-CheckToolVersion",
+    "X-CheckError",
   ];
 
   const usedCodeStates = new Set();
@@ -263,6 +268,11 @@ function buildDataset(args) {
       "X-TestKind": extra["X-TestKind"] || "",
       "X-RawScore": extra["X-RawScore"] === undefined ? "" : extra["X-RawScore"],
       "X-MaxScore": extra["X-MaxScore"] === undefined ? "" : extra["X-MaxScore"],
+      "X-CheckName": extra["X-CheckName"] || "",
+      "X-CheckVerdict": extra["X-CheckVerdict"] || "",
+      "X-CheckConfigHash": extra["X-CheckConfigHash"] || "",
+      "X-CheckToolVersion": extra["X-CheckToolVersion"] || "",
+      "X-CheckError": extra["X-CheckError"] || "",
     };
   });
 
@@ -387,6 +397,12 @@ SubjectID — суррогатный ключ (users.subject_key): случай�
                  исходные значения — в X-RawScore и X-MaxScore.
   X-Test.Start   начало попытки прохождения теста.
   X-Test.Submit  отправка ответов теста. Сами ответы не выгружаются.
+  X-Check.Run    прогон автоматической проверки работы. Score - то, что
+                 измерил проверяльщик (для диаграмм это сходство с ближайшим
+                 эталоном от 0 до 1, а не оценка); вердикт и прочее - в
+                 столбцах X-Check*. Кто запустил проверку - в штатном
+                 EventInitiator. Оценку преподавателя эта проверка не ставит,
+                 она записана отдельным событием X-Grade.
   X-Sandbox.Error  сбой самой песочницы (например, на сервере не запущен
                  Docker). Код ученика при этом не компилировался и не
                  запускался, поэтому Compile и Run.Program для такой попытки
@@ -403,6 +419,12 @@ SubjectID — суррогатный ключ (users.subject_key): случай�
   X-TestKind        для тестов: graded или survey.
   X-RawScore,
   X-MaxScore        оценка и максимум в баллах курса, до нормирования.
+  X-CheckName       какой проверяльщик отработал (например, uml-class).
+  X-CheckVerdict    accepted, rejected, needs_review или error.
+  X-CheckConfigHash хеш конфигурации и эталонов, по которым шла проверка:
+                    по нему видно, сравнимы ли между собой два вердикта.
+  X-CheckToolVersion версия инструмента проверки.
+  X-CheckError      причина, по которой проверку выполнить не удалось.
 
 Что нужно знать при анализе
 ---------------------------
