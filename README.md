@@ -533,6 +533,16 @@ because in a class of twenty a group narrows a person down to a handful.
 Run `npm run validate:progsnap` afterwards - especially before sharing a
 dataset with anyone.
 
+**One line of the file is one event.** RFC 4180 would allow a quoted field to
+hold a line break, and a program's output is full of them - which turns a
+single run into ten lines of file and makes anything that reads CSV line by
+line show a table that has slipped sideways. So the text columns go out on one
+line, with control characters written the way source code writes them: a line
+break is a backslash and an `n`, a tab is a backslash and a `t`, and a
+backslash is doubled. It is reversible, the export's `README.txt` says how, and
+`DatasetMetadata.csv` carries `X-TextEscaping,backslash`. The validator fails a
+dataset where a raw line break got back into a field.
+
 ### Checking an export before it goes anywhere
 
 ```bash

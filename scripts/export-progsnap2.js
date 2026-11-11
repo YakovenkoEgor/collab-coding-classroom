@@ -70,11 +70,21 @@ function usage() {
 }
 
 // --- CSV (RFC 4180, as the spec requires) -----------------------------------
+const TEXT_ESCAPES = {
+  "\\": "\\\\",
+  "\n": "\\n",
+  "\r": "\\r",
+  "\t": "\\t",
+};
+
+function escapeText(text) {
+  return text.replace(/[\\\n\r\t]/g, (char) => TEXT_ESCAPES[char]);
+}
 
 function csvCell(value) {
   if (value === null || value === undefined) return "";
-  const text = String(value);
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  const text = escapeText(String(value));
+  return /[",]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
 function csvRow(values) {
@@ -331,6 +341,7 @@ function buildDataset(args) {
       { Property: "EventOrderScope", Value: "Global" },
       { Property: "EventOrderScopeColumns", Value: "" },
       { Property: "CodeStateRepresentation", Value: "Directory" },
+      { Property: "X-TextEscaping", Value: "backslash" },
     ]
   );
 
@@ -446,7 +457,19 @@ SubjectID — суррогатный ключ (users.subject_key): случай�
    пометкой об этом.
 6. В Order учтено фактическое время события: для правок — время с часов
    ученика, для остального — серверное.
-7. CodeStateID у событий, которые сами снимок не создают (Session.*, X-Grade),
+7. Одна строка файла — одно событие. В значениях нет переводов строк: вывод
+   программы, ввод и сообщения компилятора записаны в одну строку, а
+   управляющие символы заменены последовательностями, как в исходном коде:
+   перевод строки — два символа \\ и n, возврат каретки — \\r, табуляция — \\t,
+   сама обратная косая черта — \\\\. Преобразование обратимо; в Python:
+       import re
+       BACK = {"n": "\\n", "r": "\\r", "t": "\\t", "\\\\": "\\\\"}
+       unescape = lambda s: re.sub(r"\\\\(.)", lambda m: BACK.get(m.group(1), m.group(1)), s)
+   (codecs.decode(s, "unicode_escape") для этого не годится — он портит
+   кириллицу, потому что читает строку как latin-1).
+   Остальное — по RFC 4180: разделитель — запятая, значения с запятой или
+   кавычкой закавычены, кавычка внутри удвоена.
+8. CodeStateID у событий, которые сами снимок не создают (Session.*, X-Grade),
    указывает на последнее известное состояние кода этого ученика — так
    предписывает спецификация («если код не менялся, допускается повторное
    использование предыдущего CodeStateID»). Пусто это поле только до того, как
