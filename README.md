@@ -252,7 +252,13 @@ python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
 ```
 
-(on Linux/macOS, `.venv/bin/python`). The platform looks for the interpreter in
+(on Linux/macOS, `.venv/bin/python`). On Debian and Ubuntu install
+`python3-venv` first - without it `python3 -m venv` quietly produces an
+environment with no pip in it, and installing the requirements fails with "No
+module named pip"; the system pip from apt does not help, because the
+environment still has none of its own.
+
+The platform looks for the interpreter in
 `UML_CHECK_PYTHON`, then `checker/.venv`, then `python` on `PATH`. No Docker is
 involved: the student's file is data that gets parsed, never executed, and
 nothing reaches the network.

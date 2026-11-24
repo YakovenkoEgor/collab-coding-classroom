@@ -265,7 +265,7 @@ class _Parser:
 
     def parse(self) -> Diagram:
         lines = self.strip_comments()
-        self.check_foreign(lines)
+        #self.check_foreign(lines)
 
         skip_until: Optional[str] = None
         for number, line in lines:

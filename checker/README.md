@@ -26,6 +26,14 @@
 npm run setup:checker      # из корня проекта: создаёт .venv и ставит зависимости
 ```
 
+В Debian и Ubuntu модуль venv разложен по пакетам: без `python3-venv`
+окружение создаётся пустым, без pip, и установка падает с «No module named
+pip». Системный pip из apt тут не поможет - нужен именно этот пакет:
+
+```bash
+sudo apt install -y python3-venv python3-pip
+```
+
 То же самое руками:
 
 ```bash

@@ -42,6 +42,47 @@ function run(command, args, what) {
   }
 }
 
+// Есть ли pip в созданном окружении.
+//
+// В Debian и Ubuntu модуль venv разложен по пакетам: сам `python3 -m venv`
+// работает, а ensurepip лежит в python3-venv, которого в системе может не
+// быть. Тогда окружение создаётся пустым, без pip, и установка падает с
+// «No module named pip». Системный pip из apt тут не при чём - внутри
+// окружения его всё равно нет.
+function hasPip(python) {
+  return (
+    spawnSync(python, ["-m", "pip", "--version"], { stdio: "ignore" }).status === 0
+  );
+}
+
+function ensurePip(python) {
+  if (hasPip(python)) return;
+  console.log("В окружении нет pip — доставляю через ensurepip …");
+  const result = spawnSync(python, ["-m", "ensurepip", "--upgrade"], {
+    cwd: ROOT,
+    stdio: "inherit",
+  });
+  if (result.status === 0 && hasPip(python)) return;
+
+  console.error(
+    [
+      "",
+      "В окружении checker/.venv нет pip, и доставить его нечем.",
+      "",
+      "В Debian и Ubuntu за это отвечает отдельный пакет. Поставьте его и",
+      "пересоздайте окружение:",
+      "",
+      "  sudo apt install -y python3-venv python3-pip",
+      "  rm -rf checker/.venv",
+      "  npm run setup:checker",
+      "",
+      "Если apt скажет, что пакета нет, возьмите версионный - например,",
+      "python3.12-venv под Python 3.12 (`python3 -V` покажет версию).",
+    ].join("\n")
+  );
+  process.exit(1);
+}
+
 const wantsTests = process.argv.includes("--test");
 
 if (!fs.existsSync(path.join(ROOT, "requirements.txt"))) {
@@ -55,6 +96,7 @@ if (!fs.existsSync(venvPython())) {
 }
 
 const python = venvPython();
+ensurePip(python);
 run(
   python,
   ["-m", "pip", "install", "--disable-pip-version-check", "-q", "-r",
